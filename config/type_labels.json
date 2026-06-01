@@ -1,0 +1,12 @@
+{
+  "Invoice": ["sale", "sales", "purchase", "purc", "invoice", "bill"],
+  "CreditNote": ["cn", "crnt", "slrt", "sales return", "credit note"],
+  "DebitNote": ["dn", "debit note", "prrt", "purchase return"],
+  "Payment": ["payment", "pymt", "bank payment", "neft", "rtgs", "upi"],
+  "Receipt": ["receipt", "rcpt", "bank receipt"],
+  "TDS": ["tds", "income tax", "tax deducted"],
+  "PQV": ["pqv", "quality variance", "price variance", "qty variance"],
+  "Journal": ["jrnl", "journal", "round off", "adjustment"],
+  "OpeningBalance": ["opening balance", "opening", "ob"],
+  "ClosingBalance": ["closing balance", "closing"]
+}

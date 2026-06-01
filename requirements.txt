@@ -1,0 +1,9 @@
+python-dotenv
+pydantic
+pandas
+openpyxl
+pdfplumber
+pymupdf
+rapidfuzz
+requests
+pytest

@@ -1,0 +1,35 @@
+# Stray financial files at repo root (keep local only)
+*.pdf
+*.xlsx
+*.xls
+
+# Python virtual environment
+.venv/
+
+# Environment secrets
+.env
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Test cache
+.pytest_cache/
+
+# Generated outputs (regenerable, may contain financial context)
+data/04_outputs/
+
+# Archive
+data/99_archive/
+
+# Financial source documents and generated pair outputs (never push to GitHub)
+data/00_original_uploads/
+data/01_source_ledgers/
+data/02_work_pairs/**/input/
+data/02_work_pairs/**/output/
+data/03_reference_workbooks/
+
+# Binary office formats anywhere under data/
+data/**/*.pdf
+data/**/*.xlsx
+data/**/*.xls
