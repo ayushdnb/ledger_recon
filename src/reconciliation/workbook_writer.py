@@ -120,6 +120,18 @@ MATCH_COLUMNS = [
     "prompt_fingerprint",
     "response_fingerprint",
     "cache_key",
+    "primary_issue_code",
+    "secondary_issue_tags",
+    "amount_tolerance_used",
+    "date_tolerance_days_used",
+    "reviewer_status",
+    "selected_match_group_id",
+    "reviewer_selected_org_row_ids",
+    "reviewer_selected_party_row_ids",
+    "manual_issue_code",
+    "reviewed_by",
+    "reviewed_at",
+    "override_reason",
 ]
 
 AI_AUDIT_COLUMNS = [

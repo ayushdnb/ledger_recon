@@ -53,7 +53,7 @@ def test_containment_reference_match() -> None:
     org = [_row("o1", role="org_ledger", nref="ABC/1", amount=500.0)]
     party = [_row("p1", role="party_ledger", nref="X-ABC/1", amount=500.0)]
     result = reconcile_rows(org, party)
-    assert any(r.match_rule == "stage3_containment_ref_amount" for r in result.records)
+    assert any(r.match_rule == "stage5_containment_ref_amount" for r in result.records)
 
 
 def test_fuzzy_reference_goes_review() -> None:
@@ -75,7 +75,7 @@ def test_missing_reference_goes_review() -> None:
     org = [_row("o1", role="org_ledger", nref="", amount=500.0)]
     party = [_row("p1", role="party_ledger", nref="", date="2025-01-02", amount=500.0)]
     result = reconcile_rows(org, party)
-    assert any("stage6_no_ref" in r.match_rule for r in result.records)
+    assert any("stage15_no_ref" in r.match_rule for r in result.records)
 
 
 def test_duplicate_candidates_go_review() -> None:

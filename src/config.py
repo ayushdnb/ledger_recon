@@ -176,6 +176,33 @@ class Settings(BaseModel):
     ai_recon_review_on_validation_failure: bool = True
     recon_include_master_match_table: bool = False
 
+    # Deterministic reconciliation tolerances (authoritative operator surface).
+    recon_amount_tolerance: float = 0.01
+    recon_rounding_tolerance: float = 0.05
+    recon_date_tolerance_days: int = 7
+    recon_fuzzy_reference_threshold: float = 0.85
+    recon_max_combination_search_size: int = 8
+    recon_small_write_off_threshold: float = 1.0
+    recon_bank_charge_threshold: float = 50.0
+    recon_discount_threshold: float = 100.0
+
+    def reconciliation_tolerance_policy(self) -> "ReconTolerancePolicy":
+        """Build the resolved tolerance policy for deterministic reconciliation."""
+        from src.reconciliation.tolerance_config import build_tolerance_policy
+
+        return build_tolerance_policy(
+            amount_tolerance=self.recon_amount_tolerance,
+            rounding_tolerance=self.recon_rounding_tolerance,
+            date_tolerance_days=self.recon_date_tolerance_days,
+            fuzzy_reference_threshold=self.recon_fuzzy_reference_threshold,
+            ai_min_confidence=self.ai_recon_min_confidence,
+            max_candidate_packet_size=self.ai_recon_max_candidates_per_packet,
+            max_combination_search_size=self.recon_max_combination_search_size,
+            small_write_off_threshold=self.recon_small_write_off_threshold,
+            bank_charge_threshold=self.recon_bank_charge_threshold,
+            discount_threshold=self.recon_discount_threshold,
+        )
+
     def resolved(self, path: Path) -> Path:
         """Resolve a (possibly relative) path against the project root."""
         return path if path.is_absolute() else (self.project_root / path)
@@ -351,6 +378,14 @@ def _build_settings() -> Settings:
         recon_include_master_match_table=_env_bool(
             "RECON_INCLUDE_MASTER_MATCH_TABLE", False
         ),
+        recon_amount_tolerance=_env_float("RECON_AMOUNT_TOLERANCE", 0.01),
+        recon_rounding_tolerance=_env_float("RECON_ROUNDING_TOLERANCE", 0.05),
+        recon_date_tolerance_days=_env_int("RECON_DATE_TOLERANCE_DAYS", 7),
+        recon_fuzzy_reference_threshold=_env_float("RECON_FUZZY_REFERENCE_THRESHOLD", 0.85),
+        recon_max_combination_search_size=_env_int("RECON_MAX_COMBINATION_SEARCH_SIZE", 8),
+        recon_small_write_off_threshold=_env_float("RECON_SMALL_WRITE_OFF_THRESHOLD", 1.0),
+        recon_bank_charge_threshold=_env_float("RECON_BANK_CHARGE_THRESHOLD", 50.0),
+        recon_discount_threshold=_env_float("RECON_DISCOUNT_THRESHOLD", 100.0),
     )
 
 

@@ -231,10 +231,16 @@ def test_valid_one_to_one_ai_decision_is_accepted(tmp_path: Path) -> None:
 
 def test_valid_one_to_many_grouped_decision_is_accepted(tmp_path: Path) -> None:
     org = [_row("o1", "org", 100.0)]
-    party = [_row("p1", "party", 40.0), _row("p2", "party", 60.0)]
+    # Multiple subset-sum solutions (25+25+50 and 50+50) -> deterministic allocation skips.
+    party = [
+        _row("p1", "party", 25.0),
+        _row("p2", "party", 25.0),
+        _row("p3", "party", 50.0),
+        _row("p4", "party", 50.0),
+    ]
     decision = _decision(
         decision_type="one_to_many",
-        party_ids=["p1", "p2"],
+        party_ids=["p1", "p2", "p3"],
         match_type="grouped_amount",
         date_delta=0,
     )
@@ -247,7 +253,7 @@ def test_valid_one_to_many_grouped_decision_is_accepted(tmp_path: Path) -> None:
     )
     accepted = [record for record in result.records if record.match_status == "matched_ai"]
     assert len(accepted) == 1
-    assert accepted[0].party_row_ids == ["p1", "p2"]
+    assert accepted[0].party_row_ids == ["p1", "p2", "p3"]
     assert accepted[0].party_amount == 100.0
 
 

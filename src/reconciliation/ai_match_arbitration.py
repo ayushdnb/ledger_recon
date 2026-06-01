@@ -16,6 +16,7 @@ from typing import Any
 
 from src.config import Settings, estimate_tokens, settings
 from src.providers.ai_client import AIClient, build_ai_client
+from src.reconciliation.issue_taxonomy import PrimaryIssueCode, normalize_ai_reason_code
 from src.reconciliation.matching_engine import (
     ACCEPTED_DETERMINISTIC_STATUSES,
     MatchResult,
@@ -601,6 +602,8 @@ def validate_ai_decision(
         return reject("exact_reference_not_supported", amount=amount_delta, date=date_delta)
     if decision.match_type == "voucher_typo" and ref_similarity < 0.65:
         return reject("voucher_typo_similarity_too_low", amount=amount_delta, date=date_delta)
+    if decision.reason_code and not normalize_ai_reason_code(decision.reason_code):
+        return reject("issue_code_not_allowed", amount=amount_delta, date=date_delta)
     return AIValidationResult(
         decision.decision_id,
         True,
@@ -666,6 +669,8 @@ def _record_from_ai_decision(
         prompt_fingerprint=response.prompt_fingerprint,
         response_fingerprint=response.response_fingerprint,
         cache_key=response.cache_key,
+        primary_issue_code=normalize_ai_reason_code(decision.reason_code)
+        or PrimaryIssueCode.EXACT_MATCH.value,
     )
 
 

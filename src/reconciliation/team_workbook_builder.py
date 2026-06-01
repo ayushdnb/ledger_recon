@@ -264,6 +264,14 @@ def build_team_workbook(
         wb.calculation.fullCalcOnLoad = True
         wb.calculation.forceFullCalc = True
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(output_path)
+    try:
+        wb.save(output_path)
+    except PermissionError:
+        fallback = output_path.with_name(
+            f"{output_path.stem}__locked_fallback{output_path.suffix}"
+        )
+        wb.save(fallback)
+        wb.close()
+        return fallback
     wb.close()
     return output_path

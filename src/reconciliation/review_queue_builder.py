@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.reconciliation.balance_helpers import CLOSING_LABEL, final_closing_balance
 from src.reconciliation.matching_engine import is_missing_reference
+from src.config import settings
 from src.reconciliation.recon_models import MatchRecord, ReconRow
 
 REVIEW_QUEUE_COLUMNS = [
@@ -23,20 +25,40 @@ REVIEW_QUEUE_COLUMNS = [
     "normalized_reference",
     "amount",
     "match_status",
+    "primary_issue_code",
+    "secondary_issue_tags",
     "reason",
     "suggested_action",
     "source_raw_text",
     "reviewer_comment",
     "manual_status",
+    "manual_issue_code",
+    "selected_match_group_id",
+    "reviewer_selected_org_row_ids",
+    "reviewer_selected_party_row_ids",
+    "reviewed_by",
+    "reviewed_at",
+    "override_reason",
     "resolved_by",
     "resolved_date",
 ]
 
 # Manual columns are reviewer-owned and must always be written blank.
-MANUAL_COLUMNS = ["reviewer_comment", "manual_status", "resolved_by", "resolved_date"]
+MANUAL_COLUMNS = [
+    "reviewer_comment",
+    "manual_status",
+    "manual_issue_code",
+    "selected_match_group_id",
+    "reviewer_selected_org_row_ids",
+    "reviewer_selected_party_row_ids",
+    "reviewed_by",
+    "reviewed_at",
+    "override_reason",
+    "resolved_by",
+    "resolved_date",
+]
 
-CLOSING_LABEL = "ClosingBalance"
-_AMOUNT_TOLERANCE = 0.01
+_AMOUNT_TOLERANCE = settings.recon_amount_tolerance
 _PRIORITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
 _LOW_CONFIDENCE = 80.0
 
@@ -144,6 +166,8 @@ def build_review_queue(
                     or m.party_normalized_reference,
                     "amount": amount,
                     "match_status": m.match_status,
+                    "primary_issue_code": getattr(m, "primary_issue_code", ""),
+                    "secondary_issue_tags": getattr(m, "secondary_issue_tags", ""),
                     "reason": m.review_reason,
                     "suggested_action": _suggested_action(m),
                     "source_raw_text": " | ".join(
@@ -192,10 +216,4 @@ def build_review_queue(
 
 
 def _stated_closing(rows: list[ReconRow]) -> float | None:
-    total = 0.0
-    found = False
-    for row in rows:
-        if row.type_label == CLOSING_LABEL:
-            total += row.net_org
-            found = True
-    return total if found else None
+    return final_closing_balance(rows)

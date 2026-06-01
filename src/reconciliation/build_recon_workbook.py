@@ -132,7 +132,11 @@ def build_reconciliation_workbook(
 
     labels = _load_labels(settings.project_root / "config/type_labels.json")
     loaded = load_formalized_ledgers(formalized_path)
-    match_result = reconcile_rows(loaded.org_rows, loaded.party_rows)
+    match_result = reconcile_rows(
+        loaded.org_rows,
+        loaded.party_rows,
+        tolerance_policy=settings.reconciliation_tolerance_policy(),
+    )
     runtime_settings = settings.model_copy(
         update={
             **(
@@ -306,13 +310,23 @@ def build_reconciliation_workbook(
     # Submission copy: same polished content under the final submission name.
     _copy_output(output_path, submission_path, copy_warnings)
     _copy_output(output_path, submission_central_path, copy_warnings)
-    build_team_workbook(
-        internal_path=output_path,
-        output_path=team_submission_path,
-        pair_id=pair_id,
-        raw_sheet_names=[loaded.org_sheet[:31], loaded.party_sheet[:31]],
-    )
-    _copy_output(team_submission_path, team_submission_central_path, copy_warnings)
+    try:
+        build_team_workbook(
+            internal_path=output_path,
+            output_path=team_submission_path,
+            pair_id=pair_id,
+            raw_sheet_names=[loaded.org_sheet[:31], loaded.party_sheet[:31]],
+        )
+        _copy_output(team_submission_path, team_submission_central_path, copy_warnings)
+    except PermissionError as exc:
+        warning = str(exc)
+        logger.warning(warning)
+        copy_warnings.append(warning)
+        fallback = team_submission_path.with_name(
+            f"{team_submission_path.stem}__locked_fallback{team_submission_path.suffix}"
+        )
+        if fallback.exists():
+            _copy_output(fallback, team_submission_central_path, copy_warnings)
 
     return {
         "pair_id": pair_id,

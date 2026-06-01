@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
+from src.config import settings
+from src.reconciliation.balance_helpers import final_closing_balance
+from src.reconciliation.issue_taxonomy import is_valid_primary_code
 from src.reconciliation.matching_engine import is_missing_reference
 from src.reconciliation.recon_models import (
     FormulaAuditItem,
@@ -13,8 +16,7 @@ from src.reconciliation.recon_models import (
     ValidationItem,
 )
 
-CLOSING_LABEL = "ClosingBalance"
-_AMOUNT_TOLERANCE = 0.01
+_AMOUNT_TOLERANCE = settings.recon_amount_tolerance
 
 
 def _status(condition: bool, fail: bool = False) -> str:
@@ -24,13 +26,7 @@ def _status(condition: bool, fail: bool = False) -> str:
 
 
 def _stated_closing(rows: list[ReconRow]) -> float | None:
-    total = 0.0
-    found = False
-    for row in rows:
-        if row.type_label == CLOSING_LABEL:
-            total += row.net_org
-            found = True
-    return total if found else None
+    return final_closing_balance(rows)
 
 
 def build_validation_items(
@@ -272,5 +268,20 @@ def build_validation_items(
                 "Outstanding human-review items (intentionally retained).",
             )
         )
+
+    missing_issue = sum(
+        1
+        for m in matches
+        if m.review_required and not is_valid_primary_code(getattr(m, "primary_issue_code", ""))
+    )
+    items.append(
+        ValidationItem(
+            "exception_rows_have_primary_issue_code",
+            pair_id,
+            _status(missing_issue == 0, fail=True),
+            missing_issue,
+            "Every review/unmatched row must carry a valid primary issue code.",
+        )
+    )
 
     return items

@@ -123,6 +123,18 @@ class MatchRecord:
     prompt_fingerprint: str = ""
     response_fingerprint: str = ""
     cache_key: str = ""
+    primary_issue_code: str = ""
+    secondary_issue_tags: str = ""
+    amount_tolerance_used: float | None = None
+    date_tolerance_days_used: int | None = None
+    reviewer_status: str = ""
+    selected_match_group_id: str = ""
+    reviewer_selected_org_row_ids: str = ""
+    reviewer_selected_party_row_ids: str = ""
+    manual_issue_code: str = ""
+    reviewed_by: str = ""
+    reviewed_at: str = ""
+    override_reason: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         payload = self.__dict__.copy()
