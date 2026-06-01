@@ -96,7 +96,9 @@ def test_final_workbook_creation_and_structure(tmp_path: Path) -> None:
     wb = load_workbook(output, data_only=False)
     assert wb.sheetnames[0] == "README"
     assert "Summary" in wb.sheetnames
-    assert "Master_Match_Table" in wb.sheetnames
+    assert "AI_Decision_Audit" in wb.sheetnames
+    assert "Match_Evidence" in wb.sheetnames
+    assert "Master_Match_Table" not in wb.sheetnames
     assert "Formula_Audit" in wb.sheetnames
     assert any(s.startswith("Annex_") for s in wb.sheetnames)
     ws_work = wb["Working ORG"]
@@ -153,7 +155,7 @@ def test_amount_difference_formula_in_correct_column_and_evidence_preserved(tmp_
     )
 
     wb = load_workbook(output, data_only=False)
-    ws = wb["Master_Match_Table"]
+    ws = wb["Match_Evidence"]
     headers = [c.value for c in ws[1]]
     diff_col = _col(headers, "amount_difference")
     org_type_col = _col(headers, "org_raw_type")
@@ -242,7 +244,7 @@ def test_recon_generation_for_real_pairs(pair_id: str, formalized: Path, tmp_pat
     assert sum(1 for f in formula_audit if f.status == "FAIL") == 0
 
     wb = load_workbook(output, data_only=False)
-    ws = wb["Master_Match_Table"]
+    ws = wb["Match_Evidence"]
     headers = [str(c.value) for c in ws[1]]
     org_type_idx = headers.index("org_raw_type")
     party_type_idx = headers.index("party_raw_type")
@@ -254,4 +256,3 @@ def test_recon_generation_for_real_pairs(pair_id: str, formalized: Path, tmp_pat
     )
     assert evidence_formulas == 0
     wb.close()
-

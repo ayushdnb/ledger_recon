@@ -17,7 +17,8 @@ REQUIRED_SHEETS = {
     "README",
     "Executive_Summary",
     "Summary",
-    "Master_Match_Table",
+    "AI_Decision_Audit",
+    "Match_Evidence",
     "Review_Queue",
     "Validation_Report",
     "Formula_Audit",
@@ -142,15 +143,15 @@ def inspect(path: Path) -> dict[str, object]:
             break
     report["annexures_complete"] = annex_section_ok
 
-    # Master_Match_Table inspection
-    mmt = wb["Master_Match_Table"]
-    headers = [str(c.value) if c.value is not None else "" for c in mmt[1]]
-    report["master_headers"] = headers
+    # Match_Evidence inspection
+    evidence = wb["Match_Evidence"]
+    headers = [str(c.value) if c.value is not None else "" for c in evidence[1]]
+    report["match_evidence_headers"] = headers
     ad_idx = _col_index(headers, "amount_difference")
     report["amount_difference_col"] = get_column_letter(ad_idx) if ad_idx else None
 
-    data_rows = list(mmt.iter_rows(min_row=2))
-    report["master_data_rows"] = len(data_rows)
+    data_rows = list(evidence.iter_rows(min_row=2))
+    report["match_evidence_data_rows"] = len(data_rows)
 
     # amount_difference formulas where both amounts present
     org_idx = _col_index(headers, "org_amount")
@@ -187,6 +188,7 @@ def inspect(path: Path) -> dict[str, object]:
     type_idx = _col_index(headers, "type_label")
     strong_missing_ref = 0
     matched_strong = 0
+    matched_supported = 0
     candidate_review = 0
     unmatched = 0
     for row in data_rows:
@@ -197,11 +199,14 @@ def inspect(path: Path) -> dict[str, object]:
             pnr = row[pnr_idx - 1].value if pnr_idx else None
             if _is_missing(onr) or _is_missing(pnr):
                 strong_missing_ref += 1
+        elif status == "matched_supported":
+            matched_supported += 1
         elif status == "candidate_review":
             candidate_review += 1
         elif status in {"unmatched_org", "unmatched_party"}:
             unmatched += 1
     report["matched_strong"] = matched_strong
+    report["matched_supported"] = matched_supported
     report["candidate_review"] = candidate_review
     report["unmatched"] = unmatched
     report["strong_matches_missing_reference"] = strong_missing_ref
@@ -244,16 +249,16 @@ def inspect(path: Path) -> dict[str, object]:
     report["validation_fail_count"] = _fail_count("Validation_Report", "status")
     report["formula_audit_fail_count"] = _fail_count("Formula_Audit", "status")
 
-    # Master_Match_Table reviewer/manual fields must be blank.
-    mmt_manual_nonblank = 0
+    # Match_Evidence reviewer/manual fields must be blank.
+    evidence_manual_nonblank = 0
     for name in ("reviewer_comment", "manual_status"):
         idx = _col_index(headers, name)
         if idx is None:
             continue
-        mmt_manual_nonblank += sum(
+        evidence_manual_nonblank += sum(
             1 for row in data_rows if str(row[idx - 1].value or "").strip()
         )
-    report["master_manual_fields_nonblank"] = mmt_manual_nonblank
+    report["match_evidence_manual_fields_nonblank"] = evidence_manual_nonblank
 
     if "Review_Queue" in wb.sheetnames:
         ws = wb["Review_Queue"]
@@ -282,7 +287,7 @@ def inspect(path: Path) -> dict[str, object]:
         report["review_queue_priorities"] = sorted(priorities)
 
     # Freeze panes / filters on key sheets.
-    key_sheets = ["Master_Match_Table", "Summary"]
+    key_sheets = ["Match_Evidence", "Summary"]
     freeze_ok = True
     filter_ok = True
     for s in key_sheets:
@@ -290,10 +295,10 @@ def inspect(path: Path) -> dict[str, object]:
             ws = wb[s]
             if not ws.freeze_panes:
                 freeze_ok = False
-    if "Master_Match_Table" in wb.sheetnames and not wb["Master_Match_Table"].auto_filter.ref:
+    if "Match_Evidence" in wb.sheetnames and not wb["Match_Evidence"].auto_filter.ref:
         filter_ok = False
     report["freeze_panes_on_key_sheets"] = freeze_ok
-    report["filters_on_master_table"] = filter_ok
+    report["filters_on_match_evidence"] = filter_ok
 
     # Source-row traceability columns.
     report["traceability_columns_present"] = (

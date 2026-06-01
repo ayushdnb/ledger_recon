@@ -15,6 +15,8 @@ ANNEX_ORG_HEADERS = [
     "credit_org_perspective",
     "net_org_perspective",
     "match_status",
+    "decision_source",
+    "match_type",
     "review_flag",
 ]
 
@@ -28,6 +30,8 @@ ANNEX_PARTY_HEADERS = [
     "credit_org_perspective",
     "net_org_perspective",
     "match_status",
+    "decision_source",
+    "match_type",
     "review_flag",
 ]
 
@@ -36,6 +40,10 @@ ANNEX_MATCH_HEADERS = [
     "match_status",
     "match_rule",
     "match_confidence",
+    "decision_source",
+    "match_type",
+    "org_row_ids",
+    "party_row_ids",
     "org_row_id",
     "party_row_id",
     "org_amount",
@@ -43,6 +51,7 @@ ANNEX_MATCH_HEADERS = [
     "amount_difference",
     "review_required",
     "review_reason",
+    "validation_status",
     "reviewer_comment",
     "manual_status",
 ]
@@ -80,4 +89,3 @@ def build_annexure_plans(labels: list[str]) -> list[AnnexurePlan]:
         used.add(sheet_name)
         plans.append(AnnexurePlan(label=label, sheet_name=sheet_name))
     return plans
-

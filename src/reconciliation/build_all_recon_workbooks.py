@@ -1,4 +1,4 @@
-"""Build deterministic reconciliation workbooks for every discovered pair.
+"""Build deterministic-first reconciliation workbooks for every discovered pair.
 
 Discovers each ledger-pair workspace under ``data/02_work_pairs/`` (any directory
 that contains an ``input/`` folder), builds the reconciliation workbook for each,
@@ -46,6 +46,9 @@ def build_all(
     reference_workbook: str | None,
     strict: bool,
     dry_run: bool,
+    ai_reconciliation: bool = False,
+    ai_recon_max_batches: int | None = None,
+    strict_ai_reconciliation: bool = False,
 ) -> dict[str, object]:
     """Build reconciliation workbooks for all discovered pairs; return a manifest."""
     work_pairs_root = settings.project_root / "data/02_work_pairs"
@@ -70,6 +73,9 @@ def build_all(
                 reference_workbook=reference_workbook,
                 strict=strict,
                 dry_run=dry_run,
+                ai_reconciliation=ai_reconciliation,
+                ai_recon_max_batches=ai_recon_max_batches,
+                strict_ai_reconciliation=strict_ai_reconciliation,
             )
             results.append(result)
         except Exception as exc:  # noqa: BLE001 - record and continue other pairs
@@ -82,6 +88,8 @@ def build_all(
         "refresh_formalized": refresh_formalized,
         "ai_repair_batches": ai_repair_batches,
         "dry_run": dry_run,
+        "ai_reconciliation": ai_reconciliation,
+        "ai_recon_max_batches": ai_recon_max_batches,
         "pair_count": len(pair_ids),
         "pair_ids": pair_ids,
         "succeeded": len(results),
@@ -111,6 +119,9 @@ def main() -> None:
     parser.add_argument("--ai-repair-batches", type=int, default=0)
     parser.add_argument("--reference-workbook", default=None)
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--ai-reconciliation", action="store_true")
+    parser.add_argument("--ai-recon-max-batches", type=int, default=None)
+    parser.add_argument("--strict-ai-reconciliation", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -125,6 +136,9 @@ def main() -> None:
         reference_workbook=args.reference_workbook,
         strict=args.strict,
         dry_run=args.dry_run,
+        ai_reconciliation=args.ai_reconciliation,
+        ai_recon_max_batches=args.ai_recon_max_batches,
+        strict_ai_reconciliation=args.strict_ai_reconciliation,
     )
 
     print("=" * 70)
@@ -135,6 +149,7 @@ def main() -> None:
         print(f"pair_id:            {result.get('pair_id')}")
         print(f"submission_path:    {result.get('submission_path')}")
         print(f"central_submission: {result.get('submission_central_path')}")
+        print(f"team_workbook:      {result.get('team_submission_path')}")
         print(f"recon_workbook:     {result.get('output_path')}")
     for failure in manifest["failures"]:
         print("-" * 70)

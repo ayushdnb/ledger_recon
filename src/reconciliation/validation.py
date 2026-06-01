@@ -123,11 +123,14 @@ def build_validation_items(
     )
 
     strong = sum(1 for m in matches if m.match_status == "matched_strong")
+    supported = sum(1 for m in matches if m.match_status == "matched_supported")
     fuzzy = sum(1 for m in matches if "fuzzy" in m.match_rule)
     review_candidates = sum(1 for m in matches if m.review_required)
     unmatched_org = sum(1 for m in matches if m.match_status == "unmatched_org")
     unmatched_party = sum(1 for m in matches if m.match_status == "unmatched_party")
     many_candidates = sum(1 for m in matches if "ambiguous" in m.review_reason.lower())
+    ai_decisions = sum(1 for m in matches if m.decision_source == "AI")
+    ai_rejected = sum(1 for m in matches if m.validation_status == "REJECTED")
     # Critical safety check: a strong match must never rest on a missing
     # reference on either side. Nonzero is a hard FAIL.
     strong_missing_ref = sum(
@@ -143,6 +146,13 @@ def build_validation_items(
     items.extend(
         [
             ValidationItem("strong_matches", pair_id, "INFO", strong, ""),
+            ValidationItem(
+                "supported_matches",
+                pair_id,
+                "INFO",
+                supported,
+                "Mutually unique exact-date amount/type matches with valid mirrored polarity.",
+            ),
             ValidationItem(
                 "strong_matches_missing_reference",
                 pair_id,
@@ -176,12 +186,13 @@ def build_validation_items(
                 formula_audit_failures,
                 "Computed cells should keep formulas.",
             ),
+            ValidationItem("ai_reconciliation_decisions", pair_id, "INFO", ai_decisions, ""),
             ValidationItem(
-                "no_reconciliation_ai_decisions",
+                "ai_reconciliation_validation_rejections",
                 pair_id,
-                "PASS",
-                1,
-                "AI is never used for final match decisions.",
+                "REVIEW" if ai_rejected else "PASS",
+                ai_rejected,
+                "Rejected AI output remains visible and routes to Review_Queue.",
             ),
         ]
     )
@@ -263,4 +274,3 @@ def build_validation_items(
         )
 
     return items
-

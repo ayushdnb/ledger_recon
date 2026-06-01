@@ -59,6 +59,21 @@ def test_ai_gate_allows_when_approved(monkeypatch) -> None:
     config.settings.ensure_ai_call_allowed()
 
 
+def test_reconciliation_ai_defaults_off(monkeypatch) -> None:
+    monkeypatch.setenv("AI_RECONCILIATION_ENABLED", "false")
+    monkeypatch.setenv("AI_RECONCILIATION_MODE", "off")
+    config = _fresh_config()
+    assert config.settings.ai_reconciliation_active() is False
+
+
+def test_reconciliation_ai_gate_requires_reconciliation_mode(monkeypatch) -> None:
+    monkeypatch.setenv("AI_RECONCILIATION_ENABLED", "false")
+    monkeypatch.setenv("AI_RECONCILIATION_MODE", "off")
+    config = _fresh_config()
+    with pytest.raises(RuntimeError, match="Reconciliation AI is off"):
+        config.settings.ensure_reconciliation_ai_allowed()
+
+
 def test_api_key_is_not_exposed_in_repr(monkeypatch) -> None:
     monkeypatch.setenv("AI_API_KEY", "super-secret-key-value")
     config = _fresh_config()

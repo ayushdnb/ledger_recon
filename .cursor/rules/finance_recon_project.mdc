@@ -9,26 +9,29 @@ This is a finance ledger reconciliation automation project. It processes account
 ledgers (organisation ledgers and party ledgers) and reconciles transactions between
 the two sides.
 
-The pipeline now spans the full flow: raw PDF extraction -> deterministic
-formalization (with optional, token-limited AI layout profiling / failed-row repair /
-unknown-label grouping) -> deterministic reconciliation and submission-quality
-workbook generation. Reconciliation, matching, annexures, summaries, validation, and
-all final balance/match decisions are owned by deterministic Python. AI is used ONLY
-to normalize messy source input (layout, failed rows, unclassifiable labels) and never
-makes a final reconciliation decision.
+The pipeline spans the full flow: raw PDF extraction -> deterministic formalization
+(with optional, token-limited AI layout profiling / failed-row repair / unknown-label
+grouping) -> deterministic-first reconciliation -> bounded AI arbitration for unresolved
+clusters -> deterministic post-validation -> submission-quality workbook generation.
 
 ## Hard rules for AI / Cursor
 
-- Deterministic Python owns reconciliation, matching, annexures, summary, validation,
-  formula generation, and workbook writing. AI must never make final match decisions.
+- Deterministic matching always runs first and preserves strong matches.
+- AI may make final reconciliation decisions only in the bounded AI reconciliation
+  arbitration layer, only from supplied row evidence, only when deterministic matching
+  cannot confidently resolve the case, and only after deterministic post-validation.
+  Invalid or low-confidence AI decisions go to Review Queue.
+- AI arbitration must use compact candidate packets, row IDs, centralized config caps,
+  deterministic fingerprints, and cache reuse. Never send whole ledgers, PDFs, or sheets.
+- Every AI decision must remain workbook-visible, traceable, auditable, and reversible.
 - Raw extraction and formalization must preserve the original source text and page
   references. Never drop, rewrite, or "clean" source text during extraction.
 - Do NOT invent or infer missing ledger fields. If a value is absent in the source, leave
   it absent (empty), never fabricate it.
 - Do NOT overwrite, mutate, or delete source files (PDFs, workbooks, original uploads).
 - Do NOT print, log, or dump secrets (e.g. `.env` contents, API keys).
-- Do NOT send financial documents to hosted / cloud AI services. All processing of
-  financial documents stays on the local machine.
+- Do NOT send financial evidence to a hosted provider unless the existing explicit
+  hosted-approval gate passes. Even when approved, send only minimal bounded packets.
 
 ## Engineering preferences
 

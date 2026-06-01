@@ -31,7 +31,7 @@ def test_formula_audit_detects_wrong_column_reference() -> None:
     # amount_difference must reference org_amount (P) and party_amount (Q).
     wb = Workbook()
     ws = wb.active
-    ws.title = "Master_Match_Table"
+    ws.title = "Match_Evidence"
     ws["R2"] = "=ABS(ABS(Q2)-ABS(R2))"  # wrong: references Q and R, not P and Q
     audit = audit_formula_cells(ws, ["R2"], "match_amount_difference", expected_contains=["P", "Q"])
     assert audit[0].status == "FAIL"
@@ -56,4 +56,3 @@ def test_protected_cell_with_formula_fails() -> None:
     statuses = {a.cell: a.status for a in audit}
     assert statuses["S2"] == "FAIL"
     assert statuses["S3"] == "PASS"
-

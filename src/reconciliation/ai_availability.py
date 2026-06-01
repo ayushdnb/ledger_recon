@@ -1,11 +1,10 @@
-"""Tiny, bounded AI availability probe for the reconciliation stage.
+"""Tiny, bounded AI availability probe for manual diagnostics.
 
 Safety contract:
 - Never sends any financial document, ledger row, amount, or reference.
 - Sends a single fixed, content-free prompt asking for strict JSON {"ok": true}.
 - Never logs, prints, or returns the API key.
-- Never raises: any failure degrades to ``available=False`` so the deterministic
-  pipeline always proceeds. AI is never used for financial match decisions.
+- Never raises: any failure degrades to ``available=False``.
 """
 
 from __future__ import annotations
@@ -48,8 +47,8 @@ class AIAvailability:
 def check_ai_availability(config: Settings | None = None) -> AIAvailability:
     """Probe AI availability without sending any financial data.
 
-    Returns a structured result. AI is assistive only; a negative result simply
-    means the deterministic workbook is produced with ``ai_used=False``.
+    Returns a structured result. The workbook builder does not need this probe;
+    arbitration calls are made lazily only when unresolved packets exist.
     """
     config = config or settings
     enabled = bool(config.ai_enabled)

@@ -1,9 +1,19 @@
-"""Typed models for deterministic reconciliation."""
+"""Typed models for deterministic-first reconciliation and AI arbitration."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class FinalMatchDecisionSource(str, Enum):
+    """Authority responsible for the final workbook placement."""
+
+    DETERMINISTIC = "deterministic"
+    AI = "AI"
+    HUMAN_REVIEW_REQUIRED = "human_review_required"
 
 
 @dataclass
@@ -74,7 +84,7 @@ class ReconRow:
 
 @dataclass
 class MatchRecord:
-    """One deterministic match/candidate/unmatched output row."""
+    """One final match, ledger-only placement, or review-required output row."""
 
     match_group_id: str
     match_status: str
@@ -102,9 +112,168 @@ class MatchRecord:
     review_reason: str = ""
     reviewer_comment: str = ""
     manual_status: str = ""
+    decision_id: str = ""
+    decision_source: str = FinalMatchDecisionSource.DETERMINISTIC.value
+    match_type: str = ""
+    org_row_ids: list[str] = field(default_factory=list)
+    party_row_ids: list[str] = field(default_factory=list)
+    compact_explanation: str = ""
+    validation_status: str = ""
+    validation_reason: str = ""
+    prompt_fingerprint: str = ""
+    response_fingerprint: str = ""
+    cache_key: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        payload = self.__dict__.copy()
+        payload["org_row_ids"] = json.dumps(self.org_row_ids or ([self.org_row_id] if self.org_row_id else []))
+        payload["party_row_ids"] = json.dumps(
+            self.party_row_ids or ([self.party_row_id] if self.party_row_id else [])
+        )
+        return payload
+
+
+@dataclass
+class UnresolvedDeterministicMatchCluster:
+    """A coherent set of rows left unresolved by deterministic matching."""
+
+    cluster_id: str
+    org_row_ids: list[str]
+    party_row_ids: list[str]
+    deterministic_reason: str
+
+
+@dataclass
+class AIReconciliationCandidate:
+    """Minimal, source-traceable candidate evidence sent to the AI arbiter."""
+
+    side: str
+    row_id: str
+    type_label: str
+    raw_date: str
+    normalized_date: str
+    voucher_no: str
+    bill_no: str
+    reference_no: str
+    normalized_reference: str
+    particulars_ref: str
+    account_ref: str
+    debit_source: float
+    credit_source: float
+    debit_org_perspective: float
+    credit_org_perspective: float
+    amount_org_perspective: float
+    source_file: str
+    page_number: str
+    source_row_number: str
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
+
+
+@dataclass
+class AIReconciliationComparison:
+    """Deterministic pairwise facts included to reduce model arithmetic errors."""
+
+    org_row_id: str
+    party_row_id: str
+    amount_delta: float
+    date_delta_days: int | None
+    reference_relation: str
+    reference_similarity: float
+    type_compatible: bool
+    source_side_mirror: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.__dict__.copy()
+
+
+@dataclass
+class AIReconciliationCandidatePacket:
+    """Bounded evidence packet for one semantically coherent unresolved cluster."""
+
+    packet_id: str
+    cluster_id: str
+    deterministic_reason: str
+    candidates: list[AIReconciliationCandidate]
+    comparisons: list[AIReconciliationComparison]
+    text_dictionary: dict[str, str]
+    fingerprint: str
+    over_candidate_limit: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "packet_id": self.packet_id,
+            "cluster_id": self.cluster_id,
+            "deterministic_reason": self.deterministic_reason,
+            "text_dictionary": self.text_dictionary,
+            "candidates": [candidate.as_dict() for candidate in self.candidates],
+            "comparisons": [comparison.as_dict() for comparison in self.comparisons],
+        }
+
+
+@dataclass
+class AIReconciliationRequest:
+    """One strict JSON-only request prepared for the provider abstraction."""
+
+    packet_id: str
+    prompt_fingerprint: str
+    estimated_input_tokens: int
+    messages: list[dict[str, str]]
+
+
+@dataclass
+class AIMatchDecision:
+    """Schema-validated decision returned by the AI arbiter."""
+
+    decision_id: str
+    decision_type: str
+    org_row_ids: list[str]
+    party_row_ids: list[str]
+    match_type: str
+    confidence: float
+    amount_delta: float
+    date_delta_days: int
+    reason_code: str
+    explanation: str
+    review_reason: str | None
+
+
+@dataclass
+class AIReconciliationResponse:
+    """Parsed provider response plus audit fingerprints."""
+
+    decisions: list[AIMatchDecision]
+    prompt_fingerprint: str
+    response_fingerprint: str
+    cache_key: str
+    cache_hit: bool
+
+
+@dataclass
+class AIValidationResult:
+    """Deterministic post-validation result for one AI decision."""
+
+    decision_id: str
+    accepted: bool
+    status: str
+    rejection_reason: str = ""
+    actual_amount_delta: float | None = None
+    actual_date_delta_days: int | None = None
+
+
+@dataclass
+class AIArbitrationResult:
+    """Final records and metrics produced by the AI arbitration layer."""
+
+    records: list[MatchRecord]
+    packets: list[AIReconciliationCandidatePacket] = field(default_factory=list)
+    validation_results: list[AIValidationResult] = field(default_factory=list)
+    provider_call_count: int = 0
+    cache_hit_count: int = 0
+    cache_miss_count: int = 0
+    accepted_decision_count: int = 0
+    review_required_count: int = 0
 
 
 @dataclass
@@ -151,4 +320,3 @@ class ReconBuildResult:
     matches: list[MatchRecord] = field(default_factory=list)
     validation_items: list[ValidationItem] = field(default_factory=list)
     formula_audit: list[FormulaAuditItem] = field(default_factory=list)
-

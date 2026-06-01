@@ -162,7 +162,7 @@ def autosize(ws: Worksheet, max_col: int, max_row: int, *, cap: int = 58) -> Non
 def status_fill(match_status: str, review_required: bool) -> PatternFill | None:
     """Subtle row fill by reconciliation status (used sparingly)."""
     status = (match_status or "").strip().lower()
-    if status == "matched_strong":
+    if status in {"matched_strong", "matched_supported"}:
         return FILL_MATCH
     if review_required or status == "candidate_review":
         return FILL_REVIEW

@@ -20,6 +20,7 @@ from src.reconciliation.review_queue_builder import (
     build_review_queue,
 )
 from src.reconciliation.summary_builder import build_summary_layout
+from src.reconciliation.team_workbook_builder import build_team_workbook
 from src.reconciliation.workbook_writer import write_reconciliation_workbook
 from src.reconciliation.working_ledger_builder import build_working_rows
 
@@ -109,7 +110,7 @@ def test_required_sheets_and_order(tmp_path: Path) -> None:
     names = wb.sheetnames
     assert names[0] == "README"
     assert names[1] == "Executive_Summary"
-    for required in ("Summary", "Master_Match_Table", "Review_Queue",
+    for required in ("Summary", "AI_Decision_Audit", "Match_Evidence", "Review_Queue",
                      "Validation_Report", "Formula_Audit", "Assumptions_And_Limits"):
         assert required in names
     # Executive_Summary must come before Summary; Assumptions last block.
@@ -178,7 +179,7 @@ def test_review_queue_columns_priority_and_blank_manuals(tmp_path: Path) -> None
     matches = [
         MatchRecord(
             match_group_id="MG1", match_status="unmatched_org", match_confidence=0.0,
-            match_rule="stage6_unmatched_org", type_label="Invoice", org_row_id="o1",
+            match_rule="stage7_unmatched_org", type_label="Invoice", org_row_id="o1",
             org_normalized_reference="refo1", org_amount=100.0, review_required=True,
             review_reason="No deterministic match found for org row.",
         ),
@@ -211,14 +212,14 @@ def test_assumptions_sheet_present(tmp_path: Path) -> None:
     wb = load_workbook(_build(tmp_path), data_only=False)
     ws = wb["Assumptions_And_Limits"]
     text = " ".join(str(c.value) for row in ws.iter_rows() for c in row if c.value)
-    assert "No AI final match decisions" in text or "No AI final match" in text
+    assert "deterministically post-validated" in text
     assert "source of truth" in text.lower()
     wb.close()
 
 
 def test_styling_basics_applied(tmp_path: Path) -> None:
     wb = load_workbook(_build(tmp_path), data_only=False)
-    mmt = wb["Master_Match_Table"]
+    mmt = wb["Match_Evidence"]
     assert mmt.freeze_panes  # frozen header
     assert mmt.auto_filter.ref  # filter applied
     assert mmt["A1"].font.bold  # bold header
@@ -231,7 +232,7 @@ def test_styling_basics_applied(tmp_path: Path) -> None:
 
 def test_no_formulas_in_evidence_columns(tmp_path: Path) -> None:
     wb = load_workbook(_build(tmp_path), data_only=False)
-    ws = wb["Master_Match_Table"]
+    ws = wb["Match_Evidence"]
     headers = [str(c.value) for c in ws[1]]
     for name in ("org_raw_type", "party_raw_type", "org_particulars", "party_particulars",
                  "org_reference", "party_reference", "org_normalized_reference",
@@ -239,6 +240,53 @@ def test_no_formulas_in_evidence_columns(tmp_path: Path) -> None:
         idx = headers.index(name)
         for row in ws.iter_rows(min_row=2):
             assert not _is_formula(row[idx].value)
+    wb.close()
+
+
+def test_team_workbook_is_clean_and_uses_excel_tables(tmp_path: Path) -> None:
+    matches = [
+        MatchRecord(
+            match_group_id="AI-1",
+            match_status="matched_ai",
+            match_confidence=0.95,
+            match_rule="ai_arbitration_amount_date",
+            type_label="Invoice",
+            org_row_id="o1",
+            party_row_id="p1",
+            org_amount=100.0,
+            party_amount=100.0,
+            amount_difference=0.0,
+            decision_source="AI",
+            validation_status="ACCEPTED",
+        )
+    ]
+    internal = _build(tmp_path, matches=matches)
+    team = tmp_path / "team.xlsx"
+    build_team_workbook(
+        internal_path=internal,
+        output_path=team,
+        pair_id="pair_x",
+        raw_sheet_names=["ORG", "PARTY"],
+    )
+    wb = load_workbook(team, data_only=False)
+    assert wb.sheetnames[0] == "Team_Guide"
+    for name in ("ORG", "PARTY", "Match_Evidence", "AI_Decision_Audit", "Review_Queue"):
+        assert wb[name].sheet_state == "hidden"
+    for name in ("Summary", "Annex_Invoice", "Rows_Needing_Improvement", "Working ORG"):
+        assert wb[name].sheet_state == "visible"
+    working = wb["Working ORG"]
+    assert working.tables
+    headers = [str(cell.value) for cell in working[1]]
+    decision_col = get_column_letter(headers.index("decision_source") + 1)
+    assert working.column_dimensions[decision_col].hidden is True
+    annex_text = {
+        str(cell.value)
+        for row in wb["Annex_Invoice"].iter_rows()
+        for cell in row
+        if cell.value is not None
+    }
+    assert "matched_ai" not in annex_text
+    assert "AI" not in annex_text
     wb.close()
 
 

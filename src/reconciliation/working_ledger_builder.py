@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from src.formalization.reference_normalization import normalize_reference
-from src.reconciliation.recon_models import ReconRow
+from src.reconciliation.recon_models import MatchRecord, ReconRow
 
 WORKING_COLUMNS = [
     "source_row_id",
@@ -31,6 +31,10 @@ WORKING_COLUMNS = [
     "match_key_secondary",
     "match_group_id",
     "match_status",
+    "decision_source",
+    "match_type",
+    "match_confidence",
+    "validation_status",
     "review_flag",
     "review_reason",
     "source_file",
@@ -90,6 +94,10 @@ def build_working_rows(rows: list[ReconRow]) -> list[WorkingRow]:
                     "match_key_secondary": match_key_secondary,
                     "match_group_id": "",
                     "match_status": "",
+                    "decision_source": "",
+                    "match_type": "",
+                    "match_confidence": None,
+                    "validation_status": "",
                     "review_flag": row.data.get("review_flag", False),
                     "review_reason": row.data.get("review_reason", ""),
                     "source_file": row.data.get("source_file", ""),
@@ -101,3 +109,49 @@ def build_working_rows(rows: list[ReconRow]) -> list[WorkingRow]:
         )
     return output
 
+
+def apply_match_records(
+    org_working: list[WorkingRow],
+    party_working: list[WorkingRow],
+    matches: list[MatchRecord],
+) -> None:
+    """Write final deterministic/AI placement directly onto both working ledgers."""
+    priority = {
+        "matched_ai": 5,
+        "matched_strong": 4,
+        "matched_supported": 3,
+        "ledger_only_ai": 2,
+        "candidate_review": 1,
+    }
+
+    def ids(record: MatchRecord, side: str) -> list[str]:
+        plural = record.org_row_ids if side == "org" else record.party_row_ids
+        singular = record.org_row_id if side == "org" else record.party_row_id
+        return plural or ([singular] if singular else [])
+
+    def apply(rows: list[WorkingRow], side: str) -> None:
+        by_id: dict[str, MatchRecord] = {}
+        for record in matches:
+            for row_id in ids(record, side):
+                previous = by_id.get(row_id)
+                if previous is None or priority.get(record.match_status, 0) > priority.get(previous.match_status, 0):
+                    by_id[row_id] = record
+        for row in rows:
+            record = by_id.get(str(row.values.get("source_row_id") or ""))
+            if record is None:
+                continue
+            row.values.update(
+                {
+                    "match_group_id": record.match_group_id,
+                    "match_status": record.match_status,
+                    "decision_source": record.decision_source,
+                    "match_type": record.match_type,
+                    "match_confidence": record.match_confidence,
+                    "validation_status": record.validation_status,
+                    "review_flag": bool(row.values.get("review_flag")) or record.review_required,
+                    "review_reason": record.review_reason or row.values.get("review_reason", ""),
+                }
+            )
+
+    apply(org_working, "org")
+    apply(party_working, "party")

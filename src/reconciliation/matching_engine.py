@@ -7,7 +7,11 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Iterable
 
-from src.reconciliation.recon_models import MatchRecord, ReconRow
+from src.reconciliation.recon_models import (
+    FinalMatchDecisionSource,
+    MatchRecord,
+    ReconRow,
+)
 
 DEFAULT_AMOUNT_TOLERANCE = 0.01
 DEFAULT_DATE_TOLERANCE_DAYS = 7
@@ -22,6 +26,10 @@ MISSING_REFERENCE_TOKENS: frozenset[str] = frozenset(
 MISSING_REFERENCE_REASON = (
     "Missing normalized reference on at least one side; no deterministic "
     "reference evidence. Amount/date/type candidate only."
+)
+
+ACCEPTED_DETERMINISTIC_STATUSES: frozenset[str] = frozenset(
+    {"matched_strong", "matched_supported"}
 )
 
 
@@ -41,6 +49,7 @@ class MatchResult:
 
     records: list[MatchRecord]
     strong_match_count: int
+    supported_match_count: int
     review_match_count: int
     unmatched_org_count: int
     unmatched_party_count: int
@@ -102,6 +111,25 @@ def _amount_close(a: float, b: float, tolerance: float) -> bool:
     return abs(abs(a) - abs(b)) <= tolerance
 
 
+def _sign(value: float) -> int:
+    return 1 if value > 0 else -1 if value < 0 else 0
+
+
+def is_mirror_polarity_plausible(org: ReconRow, party: ReconRow) -> bool:
+    """True when source ledgers mirror while the org perspective agrees."""
+    org_source_sign = _sign(org.net_source)
+    party_source_sign = _sign(party.net_source)
+    org_perspective_sign = _sign(org.net_org)
+    party_perspective_sign = _sign(party.net_org)
+    return (
+        org_source_sign != 0
+        and party_source_sign != 0
+        and org_source_sign == -party_source_sign
+        and org_perspective_sign != 0
+        and org_perspective_sign == party_perspective_sign
+    )
+
+
 def _candidate_sort_key(org: ReconRow, party: ReconRow) -> tuple:
     relation, rel_score = _reference_relation(
         org.normalized_reference, party.normalized_reference
@@ -136,8 +164,9 @@ def _make_record(
         org.normalized_reference if org else "",
         party.normalized_reference if party else "",
     )
+    match_group_id = f"MG{group_id:06d}"
     return MatchRecord(
-        match_group_id=f"MG{group_id:06d}",
+        match_group_id=match_group_id,
         match_status=status,
         match_confidence=round(confidence, 3),
         match_rule=rule,
@@ -161,6 +190,17 @@ def _make_record(
         party_particulars=str(party.data.get("particulars", "")) if party else "",
         review_required=review_required,
         review_reason=review_reason,
+        decision_id=match_group_id,
+        decision_source=(
+            FinalMatchDecisionSource.HUMAN_REVIEW_REQUIRED.value
+            if review_required
+            else FinalMatchDecisionSource.DETERMINISTIC.value
+        ),
+        match_type=rule,
+        org_row_ids=[org.row_id] if org else [],
+        party_row_ids=[party.row_id] if party else [],
+        compact_explanation=review_reason or "Accepted by deterministic reconciliation rule.",
+        validation_status="REVIEW" if review_required else "ACCEPTED",
     )
 
 
@@ -183,6 +223,8 @@ def reconcile_rows(
 
     records: list[MatchRecord] = []
     group_id = 1
+    represented_org_ids: set[str] = set()
+    represented_party_ids: set[str] = set()
 
     def consume(org: ReconRow, party: ReconRow, status: str, rule: str, conf: float) -> None:
         nonlocal group_id
@@ -202,8 +244,32 @@ def reconcile_rows(
         unmatched_org.pop(org.row_id, None)
         unmatched_party.pop(party.row_id, None)
 
+    def add_review_candidate(
+        org: ReconRow,
+        party: ReconRow,
+        rule: str,
+        confidence: float,
+        reason: str,
+    ) -> None:
+        nonlocal group_id
+        records.append(
+            _make_record(
+                group_id,
+                "candidate_review",
+                rule,
+                org,
+                party,
+                confidence,
+                review_required=True,
+                review_reason=reason,
+            )
+        )
+        group_id += 1
+        represented_org_ids.add(org.row_id)
+        represented_party_ids.add(party.row_id)
+
     # Stage 1 + 2 exact ref + amount (+ optional type compatibility).
-    # Hard safety rule: if the org reference is missing, stages 1-4 are forbidden.
+    # Hard safety rule: missing references cannot enter reference-strong stages.
     for org in list(unmatched_org.values()):
         if is_missing_reference(org.normalized_reference):
             continue
@@ -213,6 +279,7 @@ def reconcile_rows(
             if not is_missing_reference(p.normalized_reference)
             and p.normalized_reference == org.normalized_reference
             and _amount_close(org.net_org, p.net_org, amount_tolerance)
+            and is_mirror_polarity_plausible(org, p)
         ]
         if not candidates:
             continue
@@ -230,31 +297,104 @@ def reconcile_rows(
         # Ambiguous exact matches -> review.
         best = sorted(pool, key=lambda p: _candidate_sort_key(org, p), reverse=True)
         top = best[0]
-        records.append(
-            _make_record(
-                group_id,
-                "candidate_review",
-                "stage1_2_ambiguous_exact_ref",
-                org,
-                top,
-                0.7,
-                review_required=True,
-                review_reason="Multiple exact-reference candidates; deterministic tie unresolved.",
-            )
+        add_review_candidate(
+            org,
+            top,
+            "stage1_2_ambiguous_exact_ref",
+            0.7,
+            "Multiple exact-reference candidates; deterministic tie unresolved.",
         )
-        group_id += 1
 
-    # Stage 3/4/5 on still unmatched org rows.
+    # Stage 3: mutually unique containment-reference matches.
+    for org in list(unmatched_org.values()):
+        if is_missing_reference(org.normalized_reference):
+            continue
+        candidates = []
+        for party in unmatched_party.values():
+            relation, _ = _reference_relation(
+                org.normalized_reference, party.normalized_reference
+            )
+            date_delta = _date_delta_days(org.date, party.date)
+            if (
+                not is_missing_reference(party.normalized_reference)
+                and relation in {"contains", "contained_by"}
+                and _amount_close(org.net_org, party.net_org, amount_tolerance)
+                and (date_delta is None or date_delta <= date_tolerance_days)
+                and is_type_compatible(org.type_label, party.type_label)
+                and is_mirror_polarity_plausible(org, party)
+            ):
+                candidates.append(party)
+        if len(candidates) != 1:
+            continue
+        party = candidates[0]
+        reverse_candidates = []
+        for other_org in unmatched_org.values():
+            relation, _ = _reference_relation(
+                other_org.normalized_reference, party.normalized_reference
+            )
+            date_delta = _date_delta_days(other_org.date, party.date)
+            if (
+                not is_missing_reference(other_org.normalized_reference)
+                and relation in {"contains", "contained_by"}
+                and _amount_close(other_org.net_org, party.net_org, amount_tolerance)
+                and (date_delta is None or date_delta <= date_tolerance_days)
+                and is_type_compatible(other_org.type_label, party.type_label)
+                and is_mirror_polarity_plausible(other_org, party)
+            ):
+                reverse_candidates.append(other_org)
+        if len(reverse_candidates) == 1:
+            consume(org, party, "matched_strong", "stage3_containment_ref_amount", 0.9)
+
+    # Stage 4: safe supported matches. These are accepted separately from
+    # reference-strong matches because references may be missing or imperfect.
+    def supported_candidates(org: ReconRow) -> list[ReconRow]:
+        return [
+            party
+            for party in unmatched_party.values()
+            if _amount_close(org.net_org, party.net_org, amount_tolerance)
+            and _date_delta_days(org.date, party.date) == 0
+            and is_type_compatible(org.type_label, party.type_label)
+            and is_mirror_polarity_plausible(org, party)
+        ]
+
+    by_org = {
+        org.row_id: supported_candidates(org)
+        for org in unmatched_org.values()
+    }
+    by_party: dict[str, list[ReconRow]] = {party.row_id: [] for party in unmatched_party.values()}
+    for org in unmatched_org.values():
+        for party in by_org[org.row_id]:
+            by_party[party.row_id].append(org)
+    for org in list(unmatched_org.values()):
+        candidates = by_org[org.row_id]
+        if len(candidates) != 1:
+            continue
+        party = candidates[0]
+        if len(by_party[party.row_id]) == 1:
+            consume(
+                org,
+                party,
+                "matched_supported",
+                "stage4_supported_unique_mirror_amount_date_type",
+                0.85,
+            )
+
+    # Stage 5/6 weak candidates on still unmatched org rows.
     #
     # Hard safety rule: if the normalized reference is missing on EITHER side,
-    # stages 1-4 (exact / containment / fuzzy reference) are forbidden. Such a
-    # row may only be offered as a Stage-5 amount/date/type review candidate and
+    # reference-strong matching is forbidden. Such a
+    # row may only be accepted by the mutually unique supported tier or offered
+    # as a Stage-6 amount/date/type review candidate and
     # can never become a strong match.
     for org in list(unmatched_org.values()):
+        if org.row_id in represented_org_ids:
+            continue
         org_ref_missing = is_missing_reference(org.normalized_reference)
         scored: list[tuple[tuple, ReconRow]] = []
         for party in unmatched_party.values():
             if not _amount_close(org.net_org, party.net_org, amount_tolerance):
+                continue
+            if not is_mirror_polarity_plausible(org, party):
                 continue
             party_ref_missing = is_missing_reference(party.normalized_reference)
             relation, rel_score = _reference_relation(
@@ -262,66 +402,51 @@ def reconcile_rows(
             )
             date_delta = _date_delta_days(org.date, party.date)
             compatible_date = date_delta is None or date_delta <= date_tolerance_days
+            type_ok = is_type_compatible(org.type_label, party.type_label)
             if org_ref_missing or party_ref_missing:
-                # Stage 5 only: amount + (compatible date) + (compatible type).
-                type_ok = is_type_compatible(org.type_label, party.type_label)
+                # Stage 6 only: amount + (compatible date) + (compatible type).
                 if compatible_date and type_ok:
                     scored.append((_candidate_sort_key(org, party), party))
             elif relation in {"contains", "contained_by"}:
-                if compatible_date:
+                if compatible_date and type_ok:
                     scored.append((_candidate_sort_key(org, party), party))
-            elif relation == "fuzzy" and compatible_date:
+            elif relation == "fuzzy" and compatible_date and type_ok:
                 scored.append((_candidate_sort_key(org, party), party))
         if not scored:
             continue
         scored.sort(key=lambda x: x[0], reverse=True)
         top_party = scored[0][1]
         top_party_ref_missing = is_missing_reference(top_party.normalized_reference)
-        rel, rel_score = _reference_relation(org.normalized_reference, top_party.normalized_reference)
-
-        # Strong containment is only permitted when BOTH references are present.
-        if (
-            not org_ref_missing
-            and not top_party_ref_missing
-            and rel in {"contains", "contained_by"}
-            and rel_score >= 0.8
-        ):
-            consume(org, top_party, "matched_strong", "stage3_containment_ref_amount", 0.9)
-            continue
+        rel, _ = _reference_relation(org.normalized_reference, top_party.normalized_reference)
 
         if org_ref_missing or top_party_ref_missing:
-            rule = "stage5_no_ref_amount_date"
+            rule = "stage6_no_ref_amount_date"
             reason = MISSING_REFERENCE_REASON
             confidence = 0.4
         elif rel == "fuzzy":
-            rule = "stage4_fuzzy_ref_amount_date"
+            rule = "stage5_fuzzy_ref_amount_date"
             reason = "Fuzzy/weak reference candidate requires manual review."
             confidence = 0.6
+        elif rel in {"contains", "contained_by"}:
+            rule = "stage5_ambiguous_containment_ref_amount"
+            reason = "Containment-reference candidate is not mutually unique; manual review required."
+            confidence = 0.6
         else:
-            rule = "stage5_no_ref_amount_date"
+            rule = "stage6_no_ref_amount_date"
             reason = MISSING_REFERENCE_REASON
             confidence = 0.4
-        records.append(
-            _make_record(
-                group_id,
-                "candidate_review",
-                rule,
-                org,
-                top_party,
-                confidence,
-                review_required=True,
-                review_reason=reason,
-            )
-        )
-        group_id += 1
+        add_review_candidate(org, top_party, rule, confidence, reason)
 
-    # Stage 6/7 unmatched rows.
+    # Stage 7/8 unmatched rows. Rows already represented by a review candidate
+    # are not emitted again as unmatched.
     for org in sorted(unmatched_org.values(), key=lambda r: r.row_id):
+        if org.row_id in represented_org_ids:
+            continue
         records.append(
             _make_record(
                 group_id,
                 "unmatched_org",
-                "stage6_unmatched_org",
+                "stage7_unmatched_org",
                 org,
                 None,
                 0.0,
@@ -331,11 +456,13 @@ def reconcile_rows(
         )
         group_id += 1
     for party in sorted(unmatched_party.values(), key=lambda r: r.row_id):
+        if party.row_id in represented_party_ids:
+            continue
         records.append(
             _make_record(
                 group_id,
                 "unmatched_party",
-                "stage7_unmatched_party",
+                "stage8_unmatched_party",
                 None,
                 party,
                 0.0,
@@ -346,12 +473,13 @@ def reconcile_rows(
         group_id += 1
 
     strong = sum(1 for r in records if r.match_status == "matched_strong")
+    supported = sum(1 for r in records if r.match_status == "matched_supported")
     review = sum(1 for r in records if r.review_required)
     return MatchResult(
         records=records,
         strong_match_count=strong,
+        supported_match_count=supported,
         review_match_count=review,
         unmatched_org_count=sum(1 for r in records if r.match_status == "unmatched_org"),
         unmatched_party_count=sum(1 for r in records if r.match_status == "unmatched_party"),
     )
-

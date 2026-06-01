@@ -1,9 +1,9 @@
 """Write a submission-quality reconciliation workbook.
 
-The workbook is deterministic and formula-backed. Computed amounts are Excel
-formulas (so a reviewer can audit them live), evidence/source columns are never
-overwritten by a formula, and every item lacking deterministic evidence is
-routed to the Review_Queue rather than being silently closed.
+The workbook is formula-backed. Computed amounts are Excel formulas (so a
+reviewer can audit them live), evidence/source columns are never overwritten by
+a formula, and bounded AI decisions remain visible and deterministically
+post-validated.
 
 Styling is centralised in :mod:`workbook_style` and is intentionally subtle.
 """
@@ -109,8 +109,42 @@ MATCH_COLUMNS = [
     "review_reason",
     "reviewer_comment",
     "manual_status",
+    "decision_id",
+    "decision_source",
+    "match_type",
+    "org_row_ids",
+    "party_row_ids",
+    "compact_explanation",
+    "validation_status",
+    "validation_reason",
+    "prompt_fingerprint",
+    "response_fingerprint",
+    "cache_key",
 ]
 
+AI_AUDIT_COLUMNS = [
+    "decision_id",
+    "decision_source",
+    "match_status",
+    "match_type",
+    "match_confidence",
+    "org_row_ids",
+    "party_row_ids",
+    "org_amount",
+    "party_amount",
+    "amount_difference",
+    "date_delta_days",
+    "match_rule",
+    "compact_explanation",
+    "validation_status",
+    "validation_reason",
+    "prompt_fingerprint",
+    "response_fingerprint",
+    "cache_key",
+]
+
+MATCH_EVIDENCE_SHEET = "Match_Evidence"
+AI_DECISION_AUDIT_SHEET = "AI_Decision_Audit"
 REQUIRED_SHEET_ORDER_HEAD = ["README", "Executive_Summary"]
 
 # Status column letters in dependent sheets (kept here so Summary / Executive
@@ -215,14 +249,21 @@ def _write_summary(
 
     def sumifs_status(col: str, status: str) -> str:
         return (
-            f"=SUMIFS(Master_Match_Table!${col}:${col},"
-            f"Master_Match_Table!${m_status}:${m_status},\"{status}\")"
+            f"=SUMIFS({MATCH_EVIDENCE_SHEET}!${col}:${col},"
+            f"{MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"{status}\")"
         )
 
     def sumifs_review(col: str) -> str:
         return (
-            f"=SUMIFS(Master_Match_Table!${col}:${col},"
-            f"Master_Match_Table!${m_review}:${m_review},TRUE)"
+            f"=SUMIFS({MATCH_EVIDENCE_SHEET}!${col}:${col},"
+            f"{MATCH_EVIDENCE_SHEET}!${m_review}:${m_review},TRUE)"
+        )
+
+    def sumifs_accepted(col: str) -> str:
+        return (
+            f"={sumifs_status(col, 'matched_strong')[1:]}"
+            f"+{sumifs_status(col, 'matched_supported')[1:]}"
+            f"+{sumifs_status(col, 'matched_ai')[1:]}"
         )
 
     kind_row_map: dict[str, int] = {}
@@ -275,8 +316,8 @@ def _write_summary(
             )
             formula_cells.append(f"{COL_PARTY}{row_no}")
         elif srow.kind == "matched":
-            ws[f"{COL_ORG}{row_no}"] = sumifs_status(m_org, "matched_strong")
-            ws[f"{COL_PARTY}{row_no}"] = sumifs_status(m_party, "matched_strong")
+            ws[f"{COL_ORG}{row_no}"] = sumifs_accepted(m_org)
+            ws[f"{COL_PARTY}{row_no}"] = sumifs_accepted(m_party)
             ws[f"{COL_DIFF}{row_no}"] = f"={COL_ORG}{row_no}-{COL_PARTY}{row_no}"
             formula_cells += [f"{COL_ORG}{row_no}", f"{COL_PARTY}{row_no}", f"{COL_DIFF}{row_no}"]
         elif srow.kind == "candidate_review":
@@ -417,13 +458,17 @@ def _write_executive_summary(
 
     section("Reconciliation Status Snapshot")
     kv("Strong matched count",
-       f"=COUNTIF(Master_Match_Table!${m_status}:${m_status},\"matched_strong\")", is_formula=True)
+       f"=COUNTIF({MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"matched_strong\")", is_formula=True)
+    kv("Supported matched count",
+       f"=COUNTIF({MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"matched_supported\")", is_formula=True)
+    kv("AI accepted match count",
+       f"=COUNTIF({MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"matched_ai\")", is_formula=True)
     kv("Candidate review count",
-       f"=COUNTIF(Master_Match_Table!${m_status}:${m_status},\"candidate_review\")", is_formula=True)
+       f"=COUNTIF({MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"candidate_review\")", is_formula=True)
     kv("Unmatched org count",
-       f"=COUNTIF(Master_Match_Table!${m_status}:${m_status},\"unmatched_org\")", is_formula=True)
+       f"=COUNTIF({MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"unmatched_org\")", is_formula=True)
     kv("Unmatched party count",
-       f"=COUNTIF(Master_Match_Table!${m_status}:${m_status},\"unmatched_party\")", is_formula=True)
+       f"=COUNTIF({MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"unmatched_party\")", is_formula=True)
     kv("Review queue count", f"={review_count_formula}", is_formula=True)
     kv("Validation fail count",
        f"=COUNTIF(Validation_Report!${_VALIDATION_STATUS_COL}:${_VALIDATION_STATUS_COL},\"FAIL\")",
@@ -458,9 +503,9 @@ def _write_executive_summary(
     r += 1
     note = (
         "This workbook is generated from source ledger PDFs with traceable "
-        "extracted rows, formula-backed summaries, deterministic matching, "
-        "validation checks, and review queues. Items lacking deterministic "
-        "evidence are routed to human review. Open in Excel to recalculate "
+        "extracted rows, formula-backed summaries, deterministic-first matching, "
+        "bounded AI arbitration, validation checks, and review queues. AI-made "
+        "placements remain visible and pass deterministic post-validation. Open in Excel to recalculate "
         "formulas. Final accounting closure requires human approval of all "
         "Review_Queue items."
     )
@@ -483,11 +528,12 @@ def _write_assumptions(ws) -> None:
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=3)
     st.style_banner(ws, 1, 3)
     items = [
-        "No AI final match decisions are made; matching is fully deterministic.",
-        "AI, if used at all, only assists bounded extraction / diagnostic repair.",
+        "Deterministic matching runs first and preserves strong matches.",
+        "AI may make final placements only inside bounded reconciliation arbitration.",
+        "Every AI placement is restricted to supplied row IDs and deterministically post-validated.",
         "Amounts and references are never invented; absent source values stay absent.",
-        "Missing-reference matches remain review candidates, never strong matches.",
-        "The Review_Queue is intentional; review rows are not deleted to look clean.",
+        "Rejected, invalid, or low-confidence AI decisions remain in Review_Queue.",
+        "The Review_Queue contains unresolved work; accepted AI decisions stay visible in audit sheets.",
         "The workbook is formula-backed; open it in Excel to calculate formulas.",
         "Final accounting closure requires human approval of all review-queue items.",
         "Source ledger PDFs remain the source of truth for every figure.",
@@ -551,21 +597,27 @@ def _write_annexure(
          f"=SUMIFS('{party_working_sheet}'!${w_net}:${w_net},"
          f"'{party_working_sheet}'!${w_type}:${w_type},\"{plan.label}\")", True),
         ("Difference", "=B5-B6", True),
-        ("Strong matched amount",
-         f"=SUMIFS(Master_Match_Table!${m_org}:${m_org},"
-         f"Master_Match_Table!${m_type}:${m_type},\"{plan.label}\","
-         f"Master_Match_Table!${m_status}:${m_status},\"matched_strong\")", True),
+        ("Accepted matched amount",
+         f"=SUMIFS({MATCH_EVIDENCE_SHEET}!${m_org}:${m_org},"
+         f"{MATCH_EVIDENCE_SHEET}!${m_type}:${m_type},\"{plan.label}\","
+         f"{MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"matched_strong\")"
+         f"+SUMIFS({MATCH_EVIDENCE_SHEET}!${m_org}:${m_org},"
+         f"{MATCH_EVIDENCE_SHEET}!${m_type}:${m_type},\"{plan.label}\","
+         f"{MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"matched_supported\")"
+         f"+SUMIFS({MATCH_EVIDENCE_SHEET}!${m_org}:${m_org},"
+         f"{MATCH_EVIDENCE_SHEET}!${m_type}:${m_type},\"{plan.label}\","
+         f"{MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"matched_ai\")", True),
         ("Candidate review amount",
-         f"=SUMIFS(Master_Match_Table!${m_org}:${m_org},"
-         f"Master_Match_Table!${m_type}:${m_type},\"{plan.label}\","
-         f"Master_Match_Table!${m_status}:${m_status},\"candidate_review\")", True),
+         f"=SUMIFS({MATCH_EVIDENCE_SHEET}!${m_org}:${m_org},"
+         f"{MATCH_EVIDENCE_SHEET}!${m_type}:${m_type},\"{plan.label}\","
+         f"{MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"candidate_review\")", True),
         ("Unmatched amount",
-         f"=SUMIFS(Master_Match_Table!${m_org}:${m_org},"
-         f"Master_Match_Table!${m_type}:${m_type},\"{plan.label}\","
-         f"Master_Match_Table!${m_status}:${m_status},\"unmatched_org\")", True),
+         f"=SUMIFS({MATCH_EVIDENCE_SHEET}!${m_org}:${m_org},"
+         f"{MATCH_EVIDENCE_SHEET}!${m_type}:${m_type},\"{plan.label}\","
+         f"{MATCH_EVIDENCE_SHEET}!${m_status}:${m_status},\"unmatched_org\")", True),
         ("Review count",
-         f"=COUNTIFS(Master_Match_Table!${m_type}:${m_type},\"{plan.label}\","
-         f"Master_Match_Table!${m_review}:${m_review},TRUE)", False),
+         f"=COUNTIFS({MATCH_EVIDENCE_SHEET}!${m_type}:${m_type},\"{plan.label}\","
+         f"{MATCH_EVIDENCE_SHEET}!${m_review}:${m_review},TRUE)", False),
     ]
     metric_formula_cells: list[str] = []
     r = 4
@@ -674,9 +726,9 @@ def _write_annexure(
 
 
 # --------------------------------------------------------------------------- #
-# Master match table
+# Match evidence and AI decision audit
 # --------------------------------------------------------------------------- #
-def _write_master_match_table(ws, matches: list[MatchRecord]) -> list[FormulaAuditItem]:
+def _write_match_evidence(ws, matches: list[MatchRecord]) -> list[FormulaAuditItem]:
     audit: list[FormulaAuditItem] = []
     match_payload = [m.as_dict() for m in matches]
     # Reviewer-owned columns must be blank regardless of any upstream content.
@@ -721,6 +773,11 @@ def _write_master_match_table(ws, matches: list[MatchRecord]) -> list[FormulaAud
             for c in range(1, len(MATCH_COLUMNS) + 1):
                 ws.cell(row=r, column=c).fill = fill
     return audit
+
+
+def _write_ai_decision_audit(ws, matches: list[MatchRecord]) -> None:
+    """Render authority, validation, and fingerprint metadata for every decision."""
+    _write_rows(ws, 1, AI_AUDIT_COLUMNS, [match.as_dict() for match in matches])
 
 
 # --------------------------------------------------------------------------- #
@@ -828,6 +885,7 @@ def write_reconciliation_workbook(
     matches: list[MatchRecord],
     validation_items: list[ValidationItem],
     ai_status: dict[str, Any] | None = None,
+    include_master_match_table: bool = False,
     recon_period: str = "",
     org_ledger_name: str | None = None,
     party_ledger_name: str | None = None,
@@ -885,7 +943,7 @@ def write_reconciliation_workbook(
         ("ai_used", "yes" if (ai_status and ai_status.get("available")) else "no"),
         ("ai_mode", (ai_status or {}).get("mode", "n/a")),
         ("ai_detail", (ai_status or {}).get("detail", "AI not invoked.")),
-        ("matching", "deterministic; AI never makes final match decisions"),
+        ("matching", "deterministic-first; bounded AI arbitration after deterministic failure"),
         ("review_queue_rows", review_burden),
         ("output_path", str(output_path)),
         ("caveat", "Manual review fields intentionally blank for human decisions."),
@@ -949,9 +1007,15 @@ def write_reconciliation_workbook(
     )
     formula_audit.extend(audit_formula_cells(ws_summary, summary_formula_cells, "summary_totals"))
 
-    # --- Master match table ---
-    ws_match = wb.create_sheet("Master_Match_Table")
-    formula_audit.extend(_write_master_match_table(ws_match, matches))
+    # --- Primary match evidence + AI decision audit ---
+    ws_match = wb.create_sheet(MATCH_EVIDENCE_SHEET)
+    formula_audit.extend(_write_match_evidence(ws_match, matches))
+    ws_ai_audit = wb.create_sheet(AI_DECISION_AUDIT_SHEET)
+    _write_ai_decision_audit(ws_ai_audit, matches)
+    if include_master_match_table:
+        # Optional legacy compatibility sheet. Match_Evidence remains canonical.
+        ws_legacy = wb.create_sheet("Master_Match_Table")
+        _write_match_evidence(ws_legacy, matches)
 
     # --- Annexures ---
     for plan in annex_plans:
@@ -1017,7 +1081,8 @@ def write_reconciliation_workbook(
         REQUIRED_SHEET_ORDER_HEAD
         + [org_sheet_name[:31], f"Working {org_sheet_name}"[:31],
            party_sheet_name[:31], f"Working {party_sheet_name}"[:31],
-           "Summary", "Master_Match_Table"]
+           "Summary", AI_DECISION_AUDIT_SHEET, MATCH_EVIDENCE_SHEET]
+        + (["Master_Match_Table"] if include_master_match_table else [])
         + [p.sheet_name for p in annex_plans]
         + ([UNKNOWN_REVIEW_SHEET] if unknown_present else [])
         + ["Review_Queue", "Validation_Report", "Formula_Audit", "Assumptions_And_Limits"]

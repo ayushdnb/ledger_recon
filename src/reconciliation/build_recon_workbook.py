@@ -1,4 +1,4 @@
-"""CLI entrypoint for deterministic reconciliation workbook generation."""
+"""CLI entrypoint for deterministic-first reconciliation workbook generation."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from pathlib import Path
 from datetime import datetime
 
 from src.config import settings
-from src.reconciliation.ai_availability import check_ai_availability
+from src.config import AI_RECON_ARBITRATE
+from src.reconciliation.ai_match_arbitration import arbitrate_unresolved_matches
 from src.reconciliation.annexure_builder import build_annexure_plans
 from src.reconciliation.ledger_loader import load_formalized_ledgers
 from src.reconciliation.matching_engine import reconcile_rows
@@ -28,9 +29,10 @@ from src.reconciliation.reference_profile import (
 from src.reconciliation.reference_style import derive_theme
 from src.reconciliation.review_queue_builder import build_review_queue
 from src.reconciliation.summary_builder import build_summary_layout
+from src.reconciliation.team_workbook_builder import build_team_workbook
 from src.reconciliation.validation import build_validation_items
 from src.reconciliation.workbook_writer import write_reconciliation_workbook
-from src.reconciliation.working_ledger_builder import build_working_rows
+from src.reconciliation.working_ledger_builder import apply_match_records, build_working_rows
 
 logger = logging.getLogger("reconciliation.build_recon_workbook")
 
@@ -88,6 +90,16 @@ def _run_formalization(pair_id: str, *, repair_mode: bool = False) -> None:
     subprocess.run(cmd, check=True, env=env, cwd=settings.project_root)
 
 
+def _copy_output(source: Path, destination: Path, warnings: list[str]) -> None:
+    """Copy an output artifact without letting a locked archive copy block delivery."""
+    try:
+        shutil.copyfile(source, destination)
+    except PermissionError:
+        warning = f"Could not overwrite locked copy: {destination}"
+        logger.warning(warning)
+        warnings.append(warning)
+
+
 def build_reconciliation_workbook(
     *,
     pair_id: str,
@@ -96,8 +108,11 @@ def build_reconciliation_workbook(
     reference_workbook: str | None,
     strict: bool,
     dry_run: bool,
+    ai_reconciliation: bool = False,
+    ai_recon_max_batches: int | None = None,
+    strict_ai_reconciliation: bool = False,
 ) -> dict[str, object]:
-    """Build deterministic reconciliation workbook for one pair."""
+    """Build a deterministic-first reconciliation workbook for one pair."""
     if refresh_formalized:
         logger.info("Refreshing formalized workbook first.")
         _run_formalization(pair_id, repair_mode=False)
@@ -117,9 +132,40 @@ def build_reconciliation_workbook(
 
     labels = _load_labels(settings.project_root / "config/type_labels.json")
     loaded = load_formalized_ledgers(formalized_path)
+    match_result = reconcile_rows(loaded.org_rows, loaded.party_rows)
+    runtime_settings = settings.model_copy(
+        update={
+            **(
+                {
+                    "ai_reconciliation_enabled": True,
+                    "ai_reconciliation_mode": AI_RECON_ARBITRATE,
+                }
+                if ai_reconciliation
+                else {}
+            ),
+            **(
+                {"ai_recon_max_batches": max(0, ai_recon_max_batches)}
+                if ai_recon_max_batches is not None
+                else {}
+            ),
+        }
+    )
+    arbitration = None
+    if runtime_settings.ai_reconciliation_active() and not dry_run:
+        arbitration = arbitrate_unresolved_matches(
+            loaded.org_rows,
+            loaded.party_rows,
+            match_result,
+            config=runtime_settings,
+            strict=strict_ai_reconciliation,
+        )
+        matches = arbitration.records
+    else:
+        matches = match_result.records
+
     org_working = build_working_rows(loaded.org_rows)
     party_working = build_working_rows(loaded.party_rows)
-    match_result = reconcile_rows(loaded.org_rows, loaded.party_rows)
+    apply_match_records(org_working, party_working, matches)
     annex_plans = build_annexure_plans(labels)
     annex_sheet_by_label = {p.label: p.sheet_name for p in annex_plans}
     summary_layout = build_summary_layout(
@@ -130,13 +176,33 @@ def build_reconciliation_workbook(
     party_ledger_name = _detected_name(loaded.party_rows, loaded.party_sheet)
     recon_period = _recon_period(loaded.org_rows, loaded.party_rows)
     review_queue_rows = build_review_queue(
-        loaded.org_rows, loaded.party_rows, match_result.records
+        loaded.org_rows, loaded.party_rows, matches
     )
 
-    # Bounded, content-free AI availability probe. Never sends financial data and
-    # never blocks the deterministic pipeline.
-    ai_status = check_ai_availability().as_dict()
-    logger.info("AI availability: available=%s detail=%s", ai_status["available"], ai_status["detail"])
+    ai_status = {
+        "enabled": runtime_settings.ai_reconciliation_active(),
+        "approved": (not runtime_settings.is_hosted_provider()) or runtime_settings.hosted_approved(),
+        "attempted": bool(arbitration and arbitration.provider_call_count),
+        "available": bool(
+            runtime_settings.ai_reconciliation_active()
+            and arbitration
+            and (arbitration.provider_call_count or arbitration.cache_hit_count or not arbitration.packets)
+        ),
+        "mode": runtime_settings.ai_reconciliation_mode,
+        "detail": (
+            "Dry run: arbitration enabled but provider calls intentionally skipped."
+            if dry_run and runtime_settings.ai_reconciliation_active()
+            else "Bounded AI reconciliation arbitration completed."
+            if arbitration
+            else "Deterministic-only reconciliation path used."
+        ),
+        "provider_calls": arbitration.provider_call_count if arbitration else 0,
+        "cache_hits": arbitration.cache_hit_count if arbitration else 0,
+        "cache_misses": arbitration.cache_miss_count if arbitration else 0,
+        "accepted_decisions": arbitration.accepted_decision_count if arbitration else 0,
+        "review_required": arbitration.review_required_count if arbitration else 0,
+    }
+    logger.info("Reconciliation mode=%s detail=%s", ai_status["mode"], ai_status["detail"])
 
     ref_path = discover_reference_workbook(reference_workbook)
     ref_found = ref_path is not None
@@ -159,6 +225,10 @@ def build_reconciliation_workbook(
     submission_central_dir = settings.project_root / "data/04_outputs/final_recon_submissions"
     submission_central_dir.mkdir(parents=True, exist_ok=True)
     submission_central_path = submission_central_dir / submission_path.name
+    team_submission_path = pair_output_dir / f"team_recon_submission__{pair_id}.xlsx"
+    team_submission_central_dir = settings.project_root / "data/04_outputs/team_recon_submissions"
+    team_submission_central_dir.mkdir(parents=True, exist_ok=True)
+    team_submission_central_path = team_submission_central_dir / team_submission_path.name
 
     reference_path_str = str(ref_path or (ref_profile or {}).get("workbook_path", ""))
 
@@ -170,13 +240,16 @@ def build_reconciliation_workbook(
             "central_output_path": str(central_output_path),
             "submission_path": str(submission_path),
             "submission_central_path": str(submission_central_path),
+            "team_submission_path": str(team_submission_path),
+            "team_submission_central_path": str(team_submission_central_path),
             "org_sheet": loaded.org_sheet,
             "party_sheet": loaded.party_sheet,
             "labels": labels,
             "reference_found": ref_found,
             "reference_profile_sheet_count": int((ref_profile or {}).get("sheet_count", 0)),
-            "match_rows": len(match_result.records),
+            "match_rows": len(matches),
             "ai_available": ai_status["available"],
+            "ai_reconciliation_enabled": runtime_settings.ai_reconciliation_active(),
         }
 
     # Derive and apply a curated visual theme cloned from the reference workbook
@@ -200,8 +273,9 @@ def build_reconciliation_workbook(
         party_working=party_working,
         summary_layout=summary_layout,
         annex_plans=annex_plans,
-        matches=match_result.records,
+        matches=matches,
         ai_status=ai_status,
+        include_master_match_table=runtime_settings.recon_include_master_match_table,
         recon_period=recon_period,
         org_ledger_name=org_ledger_name,
         party_ledger_name=party_ledger_name,
@@ -218,7 +292,7 @@ def build_reconciliation_workbook(
         labels=labels,
         org_rows=loaded.org_rows,
         party_rows=loaded.party_rows,
-        matches=match_result.records,
+        matches=matches,
         formula_audit_failures=formula_fails,
         formula_audit=formula_audit,
         review_queue_count=len(review_queue_rows),
@@ -227,10 +301,18 @@ def build_reconciliation_workbook(
         validation_items=validation_items, **writer_kwargs
     )
 
-    shutil.copyfile(output_path, central_output_path)
+    copy_warnings: list[str] = []
+    _copy_output(output_path, central_output_path, copy_warnings)
     # Submission copy: same polished content under the final submission name.
-    shutil.copyfile(output_path, submission_path)
-    shutil.copyfile(output_path, submission_central_path)
+    _copy_output(output_path, submission_path, copy_warnings)
+    _copy_output(output_path, submission_central_path, copy_warnings)
+    build_team_workbook(
+        internal_path=output_path,
+        output_path=team_submission_path,
+        pair_id=pair_id,
+        raw_sheet_names=[loaded.org_sheet[:31], loaded.party_sheet[:31]],
+    )
+    _copy_output(team_submission_path, team_submission_central_path, copy_warnings)
 
     return {
         "pair_id": pair_id,
@@ -239,6 +321,8 @@ def build_reconciliation_workbook(
         "central_output_path": str(central_output_path),
         "submission_path": str(submission_path),
         "submission_central_path": str(submission_central_path),
+        "team_submission_path": str(team_submission_path),
+        "team_submission_central_path": str(team_submission_central_path),
         "org_sheet": loaded.org_sheet,
         "party_sheet": loaded.party_sheet,
         "org_ledger_name": org_ledger_name,
@@ -247,26 +331,35 @@ def build_reconciliation_workbook(
         "labels": labels,
         "reference_found": ref_found,
         "reference_profile_sheet_count": int((ref_profile or {}).get("sheet_count", 0)),
-        "match_rows": len(match_result.records),
-        "strong_matches": match_result.strong_match_count,
-        "review_matches": match_result.review_match_count,
-        "unmatched_org_rows": match_result.unmatched_org_count,
-        "unmatched_party_rows": match_result.unmatched_party_count,
+        "match_rows": len(matches),
+        "strong_matches": sum(1 for match in matches if match.match_status == "matched_strong"),
+        "supported_matches": sum(1 for match in matches if match.match_status == "matched_supported"),
+        "ai_accepted_matches": sum(1 for match in matches if match.match_status == "matched_ai"),
+        "review_matches": sum(1 for match in matches if match.review_required),
+        "unmatched_org_rows": sum(1 for match in matches if match.match_status == "unmatched_org"),
+        "unmatched_party_rows": sum(1 for match in matches if match.match_status == "unmatched_party"),
         "review_queue_rows": len(review_queue_rows),
         "ai_available": ai_status["available"],
         "ai_detail": ai_status["detail"],
+        "ai_provider_calls": ai_status["provider_calls"],
+        "ai_cache_hits": ai_status["cache_hits"],
+        "ai_cache_misses": ai_status["cache_misses"],
         "formula_audit_failures": sum(1 for item in formula_audit if item.status != "PASS"),
         "validation_failures": sum(1 for v in validation_items if v.status == "FAIL"),
+        "copy_warnings": copy_warnings,
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build deterministic reconciliation workbook.")
+    parser = argparse.ArgumentParser(description="Build deterministic-first reconciliation workbook.")
     parser.add_argument("--pair-id", required=True)
     parser.add_argument("--refresh-formalized", action="store_true")
     parser.add_argument("--ai-repair-batches", type=int, default=0)
     parser.add_argument("--reference-workbook", default=None)
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--ai-reconciliation", action="store_true")
+    parser.add_argument("--ai-recon-max-batches", type=int, default=None)
+    parser.add_argument("--strict-ai-reconciliation", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -282,10 +375,12 @@ def main() -> None:
         reference_workbook=args.reference_workbook,
         strict=args.strict,
         dry_run=args.dry_run,
+        ai_reconciliation=args.ai_reconciliation,
+        ai_recon_max_batches=args.ai_recon_max_batches,
+        strict_ai_reconciliation=args.strict_ai_reconciliation,
     )
     print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
     main()
-

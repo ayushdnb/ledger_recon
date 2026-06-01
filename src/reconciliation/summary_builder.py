@@ -115,7 +115,7 @@ def build_summary_layout(
          "Opening + movements (org working ledger)."),
         ("Balance as per Party ledger", "balance_party", "Formula-linked",
          "Opening + movements (party working ledger)."),
-        ("Matched Amount", "matched", "Strong matched", "Deterministic strong matches only."),
+        ("Matched Amount", "matched", "Accepted matches", "Deterministic strong + post-validated AI matches."),
         ("Candidate Review Amount", "candidate_review", "Review required", "See Review_Queue."),
         ("Unmatched Org Amount", "unmatched_org", "Review required", "See Review_Queue."),
         ("Unmatched Party Amount", "unmatched_party", "Review required", "See Review_Queue."),

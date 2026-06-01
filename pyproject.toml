@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "finance-recon"
 version = "0.1.0"
-description = "Finance ledger reconciliation automation - raw PDF context extraction stage only."
+description = "Finance ledger reconciliation automation with deterministic-first matching and bounded AI arbitration."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

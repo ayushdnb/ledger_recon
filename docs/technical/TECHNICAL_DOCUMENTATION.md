@@ -22,11 +22,11 @@
 
 1. Optionally extracts raw PDF context to an audit workbook.
 2. **Formalizes** both PDFs into a strict, two-ledger Excel workbook with canonical schema, traceability fields, and validation.
-3. **Reconciles** organisation and party transactions deterministically, then writes submission-quality Excel workbooks (Summary, annexures, match table, review queue, validation, formula audit).
+3. **Reconciles** organisation and party transactions deterministic-first, optionally arbitrates unresolved clusters with AI, deterministically post-validates accepted placements, then writes submission-quality Excel workbooks.
 
 ### Problem solved
 
-Manual reconciliation of PDF ledgers is slow, error-prone, and hard to audit. The system automates structured extraction, standardized typing, deterministic matching, and workbook generation while preserving source evidence and human review surfaces.
+Manual reconciliation of PDF ledgers is slow, error-prone, and hard to audit. The system automates structured extraction, standardized typing, deterministic-first matching, bounded AI arbitration, and workbook generation while preserving source evidence and human review surfaces.
 
 ### Primary inputs
 
@@ -43,17 +43,21 @@ Manual reconciliation of PDF ledgers is slow, error-prone, and hard to audit. Th
 | Formalized workbook | `data/02_work_pairs/<pair_id>/output/formalized_ledgers__<pair_id>.xlsx` |
 | Reconciliation workbook | `data/02_work_pairs/<pair_id>/output/recon_workbook__<pair_id>.xlsx` |
 | Final submission copy | `data/02_work_pairs/<pair_id>/output/final_recon_submission__<pair_id>.xlsx` |
+| Clean team workbook | `data/02_work_pairs/<pair_id>/output/team_recon_submission__<pair_id>.xlsx` |
 | Central copies | `data/04_outputs/...` |
 | Run manifest | `data/04_outputs/run_manifests/recon_run_<timestamp>.json` |
 
-### Core deterministic pipeline
+### Core reconciliation pipeline
 
 ```
 PDF pair → formalize_pair_ledgers → formalized workbook
-         → load_formalized_ledgers → reconcile_rows → workbook_writer → final Excel
+         → load_formalized_ledgers → reconcile_rows
+         → optional ai_match_arbitration → deterministic post-validation
+         → workbook_writer → internal audit Excel
+         → team_workbook_builder → clean finance-team Excel
 ```
 
-Reconciliation, matching, annexures, summary formulas, validation, and formula audit are **100% deterministic Python** (`matching_engine.py`, `workbook_writer.py`, `validation.py`).
+First-pass matching, post-validation, annexures, summary formulas, and formula audit remain deterministic Python. AI authority is restricted to unresolved clusters inside `ai_match_arbitration.py`.
 
 ### Where AI is used
 
@@ -63,23 +67,23 @@ Reconciliation, matching, annexures, summary formulas, validation, and formula a
 | Formalization (optional) | `ai_failed_row_repair.py` | `AI_FORMALIZATION_MODE=repair_failed_rows` |
 | Formalization (optional) | `ai_label_grouping.py` | `AI_FORMALIZATION_MODE=group_unknown_labels` |
 | Legacy standardization (off main path) | `standardize_pair_with_ai.py` | `AI_ENABLED=true` + approval |
-| Reconciliation (diagnostic only) | `ai_availability.py` | Content-free connectivity probe; **no financial data** |
+| Reconciliation arbitration (optional) | `ai_match_arbitration.py` | `AI_RECONCILIATION_ENABLED=true`, `AI_RECONCILIATION_MODE=arbitrate` |
 
 **Default production path:** `AI_FORMALIZATION_MODE=off`, `AI_ENABLED=false` — no model calls.
 
-### Where AI is intentionally not used
+### Where AI is intentionally bounded
 
-- Transaction matching (`matching_engine.reconcile_rows`)
+- Deterministic strong matches (`matching_engine.reconcile_rows`) are never sent to AI
 - Annexure assignment
 - Summary balance/match aggregation logic (Excel formulas reference deterministic match outputs)
-- Final validation pass/fail decisions for matches
+- Final validation pass/fail decisions for AI placements remain deterministic
 - Reference normalization and type classification core (deterministic labeler with optional AI grouping overlay)
 
 ### Key architectural decisions
 
 1. **Staged pipeline** with per-pair workspaces (`data/02_work_pairs/`) for audit isolation.
 2. **Source preservation:** raw text, page numbers, extraction method never overwritten by AI on forbidden fields.
-3. **AI as bounded input normalizer only** — never final match arbiter.
+3. **AI as bounded arbiter for unresolved evidence only** — final placement requires deterministic post-validation.
 4. **Double-write reconciliation workbook:** first write collects formula audit; second write embeds validation derived from audit (Confirmed from repository: `build_recon_workbook.py` lines 210–228).
 5. **Excel formulas for financial rollups** — Python writes structure and match facts; SUMIFS/COUNTIF carry aggregations.
 
@@ -380,7 +384,7 @@ Org/party assignment: `ledger_role` field or sheet order fallback.
 
 ### Match record schema
 
-`MatchRecord` fields exported to `Master_Match_Table` — see `recon_models.py` and `MATCH_COLUMNS` in `workbook_writer.py`.
+`MatchRecord` fields exported to `Match_Evidence` and `AI_Decision_Audit` — see `recon_models.py` and `MATCH_COLUMNS` in `workbook_writer.py`.
 
 ### Validation status vocabulary
 
@@ -539,19 +543,22 @@ No single numeric score threshold for acceptance. Stages apply discrete rules:
 | 1 | `stage1_exact_ref_type_amount` | Yes, if single candidate + type compatible | 1.0 |
 | 2 | `stage2_exact_ref_amount` | Yes, if single candidate (type not required) | 0.95 |
 | 1–2 ambiguous | `stage1_2_ambiguous_exact_ref` | No — `candidate_review` | 0.7 |
-| 3 | `stage3_containment_ref_amount` | Yes, if containment + both refs present + rel_score ≥ 0.8 | 0.9 |
-| 4 | `stage4_fuzzy_ref_amount_date` | No — `candidate_review` | 0.6 |
-| 5 | `stage5_no_ref_amount_date` | No — `candidate_review` | 0.4 |
-| 6 | `stage6_unmatched_org` | N/A | 0.0 |
-| 7 | `stage7_unmatched_party` | N/A | 0.0 |
+| 3 | `stage3_containment_ref_amount` | Yes, if mutually unique containment + both refs present | 0.9 |
+| 4 | `stage4_supported_unique_mirror_amount_date_type` | Accepted as `matched_supported`, if mutually unique exact amount/date/type + mirrored polarity | 0.85 |
+| 5 | `stage5_fuzzy_ref_amount_date` / `stage5_ambiguous_containment_ref_amount` | No — `candidate_review` | 0.6 |
+| 6 | `stage6_no_ref_amount_date` | No — `candidate_review` | 0.4 |
+| 7 | `stage7_unmatched_org` | N/A | 0.0 |
+| 8 | `stage8_unmatched_party` | N/A | 0.0 |
 
 ### Hard safety rules (Confirmed from repository + tests)
 
-1. Org missing reference → skip stages 1–4 entirely.
-2. Either side missing reference → stages 1–4 forbidden; stage 5 only; **never strong match**.
-3. Fuzzy matches never become strong.
-4. One-to-one consumption: matched pairs removed from unmatched pools.
-5. Validation FAIL if any strong match has missing reference (`strong_matches_missing_reference`).
+1. Accepted deterministic pairs require mirrored source-side polarity and matching organisation-perspective polarity.
+2. Either side missing reference → reference-strong matching forbidden; **never `matched_strong`**.
+3. A missing-reference row may become `matched_supported` only when exact amount/date/type and mirrored polarity are mutually unique.
+4. Fuzzy matches never become strong.
+5. One-to-one consumption: accepted pairs are removed from unmatched pools.
+6. A row already represented by a review candidate is not emitted again as unmatched.
+7. Validation FAIL if any strong match has missing reference (`strong_matches_missing_reference`).
 
 ### False-positive / false-negative risks
 
@@ -576,7 +583,10 @@ Each match record includes: `match_rule`, `match_confidence`, `reference_relatio
 
 ### AI in matching
 
-**None.** Validation item `no_reconciliation_ai_decisions` is static PASS.
+Optional and bounded. `ai_match_arbitration.py` receives only unresolved compact
+candidate packets. AI output is strict JSON, may choose only supplied row IDs, and is
+accepted only after deterministic row-ID, ownership, amount, polarity, date, reference,
+and confidence validation. Rejections go to `Review_Queue`.
 
 ---
 
@@ -584,7 +594,7 @@ Each match record includes: `match_rule`, `match_confidence`, `reference_relatio
 
 ### Reconciliation workbook sheets (order)
 
-`README`, `Executive_Summary`, raw org sheet, `Working <org>`, raw party, `Working <party>`, `Summary`, `Master_Match_Table`, `Annex_<label>` × N, optional `Unknown_Needs_Review`, `Review_Queue`, `Validation_Report`, `Formula_Audit`, `Assumptions_And_Limits`.
+`README`, `Executive_Summary`, raw org sheet, `Working <org>`, raw party, `Working <party>`, `Summary`, `AI_Decision_Audit`, `Match_Evidence`, optional legacy `Master_Match_Table`, `Annex_<label>` × N, optional `Unknown_Needs_Review`, `Review_Queue`, `Validation_Report`, `Formula_Audit`, `Assumptions_And_Limits`.
 
 ### Summary sheet formulas (Implemented in `workbook_writer._write_summary`)
 
@@ -605,7 +615,8 @@ Balance_org = SUM(Org opening..last movement row)
 **Match aggregates:**
 
 ```text
-Matched_org = SUMIFS(Master_Match_Table!org_amount, match_status, "matched_strong")
+Matched_org = SUMIFS(Match_Evidence!org_amount, match_status, "matched_strong")
+            + SUMIFS(Match_Evidence!org_amount, match_status, "matched_ai")
 ```
 
 Similar SUMIFS for `candidate_review`, `unmatched_org`, `unmatched_party`.
@@ -613,7 +624,7 @@ Similar SUMIFS for `candidate_review`, `unmatched_org`, `unmatched_party`.
 **Review pending:**
 
 ```text
-=SUMIFS(Master_Match_Table!org_amount, review_required, TRUE)
+=SUMIFS(Match_Evidence!org_amount, review_required, TRUE)
 ```
 
 **Validation / formula status:**
@@ -623,7 +634,7 @@ Similar SUMIFS for `candidate_review`, `unmatched_org`, `unmatched_party`.
 =IF(COUNTIF(Formula_Audit!status_col,"FAIL")=0,"PASS","FAIL")
 ```
 
-### Master Match Table
+### Match Evidence
 
 **Amount difference (per row):**
 
@@ -646,7 +657,7 @@ COUNTIF on match statuses; references Summary rows via `summary_kind_row` map; r
 
 ### Annexure sheets
 
-Section A metrics use SUMIFS on working sheets and Master_Match_Table by label and match status. `Difference = B5 - B6` pattern (Confirmed from repository: subagent/workbook_writer analysis).
+Section A metrics use SUMIFS on working sheets and `Match_Evidence` by label and match status. `Difference = B5 - B6` pattern.
 
 ### Formalized workbook sheets
 
@@ -674,7 +685,7 @@ Section A metrics use SUMIFS on working sheets and Master_Match_Table by label a
 | Failed row repair | `ai_failed_row_repair.py` | ≤ `AI_MAX_FAILED_ROWS_PER_REQUEST` (25) row evidence | ISO date proposals |
 | Unknown label grouping | `ai_label_grouping.py` | Deduplicated unknown raw types | Predefined label or `UnknownNeedsReview` |
 | Legacy standardization | `standardize_pair_with_ai.py` | Chunked raw context (char cap) | Full standardized rows JSON |
-| Connectivity probe | `ai_availability.py` | Fixed `{"ok": true}` prompt | JSON acknowledgment |
+| Reconciliation arbitration | `ai_match_arbitration.py` | Compact unresolved candidate packet | Strict placement JSON |
 
 ### Model/provider configuration
 
@@ -692,20 +703,24 @@ From `.env.example`:
 1. `AI_ENABLED=true` required.
 2. Hosted providers require `AI_DATA_APPROVAL=hosted_approved`.
 3. `AI_FORMALIZATION_MODE` must be active mode (not `off`) for formalization AI.
-4. Input token estimate checked before HTTP call.
-5. `max_tokens` sent to provider as output cap.
-6. API key never logged (`SecretStr`, secret-free errors).
+4. `AI_RECONCILIATION_ENABLED=true` and `AI_RECONCILIATION_MODE=arbitrate` are required for reconciliation arbitration.
+5. Input token estimate checked before HTTP call.
+6. `max_tokens` sent to provider as output cap.
+7. API key never logged (`SecretStr`, secret-free errors).
 
 ### AI output validation
 
 - Failed row repair: validates ISO date format, re-parses with deterministic parser; forbidden fields never modified.
 - Label grouping: only predefined labels from `type_labels.json` or sentinel; never invents labels.
 - Legacy standardization: Pydantic schema validation (`ledger_schema.py`).
+- Reconciliation arbitration: exact JSON keys, supplied row IDs only, unique ownership,
+  grouped amount reconciliation, org/party mirror polarity, date tolerance, reference
+  support, minimum confidence, deterministic fingerprints, and cache keys.
 
 ### Fallback on AI failure
 
 - Formalization AI modules log warnings; deterministic rows preserved.
-- Reconciliation probe failure → `available=False`; build continues.
+- Reconciliation arbitration failure or rejected output → unresolved packet goes to `Review_Queue`.
 - Repair/grouping: rejected proposals increment `ai_repair_rejected_count`.
 
 ### Privacy
@@ -714,7 +729,7 @@ Financial documents stay local. Hosted egress requires explicit approval. Repair
 
 ### Minimization rationale
 
-Deterministic matching is auditable, reproducible, and cost-free. AI limited to irreducible ambiguity (layout, dates, unknown labels) with hard caps.
+Deterministic matching remains first and cost-free. AI is limited to irreducible ambiguity with hard caps, compact packets, deterministic cache keys, and workbook-visible audit metadata.
 
 ---
 
@@ -794,6 +809,19 @@ validation_failure_rate = failed_validations / total_validations
 | `AI_MAX_LAYOUT_SAMPLE_LINES` | `40` | Layout sample cap |
 | `AI_MAX_INPUT_TOKENS_PER_REQUEST` | `3000` | Pre-call rejection threshold |
 | `AI_MAX_OUTPUT_TOKENS` | `1024` | Provider max_tokens |
+| `AI_RECONCILIATION_ENABLED` | `false` | Enables bounded reconciliation arbitration |
+| `AI_RECONCILIATION_MODE` | `off` | Set to `arbitrate` for unresolved clusters |
+| `AI_RECON_MAX_INPUT_TOKENS_PER_REQUEST` | `3000` | Arbitration request input cap |
+| `AI_RECON_MAX_OUTPUT_TOKENS` | `1024` | Arbitration provider output cap |
+| `AI_RECON_MAX_CANDIDATES_PER_PACKET` | `12` | Hard packet row cap |
+| `AI_RECON_AMOUNT_TOLERANCE` | `0.01` | AI post-validation amount tolerance |
+| `AI_RECON_DATE_TOLERANCE_DAYS` | `7` | AI post-validation date tolerance |
+| `AI_RECON_MIN_CONFIDENCE` | `0.75` | Minimum accepted AI confidence |
+| `AI_RECON_CACHE_ENABLED` | `true` | Reuse unchanged packet decisions |
+| `AI_RECON_CACHE_DIR` | `data/04_outputs/reconciliation_ai_cache` | Arbitration response cache |
+| `AI_RECON_MAX_BATCHES` | `50` | Arbitration call cap per workbook |
+| `AI_RECON_REVIEW_ON_VALIDATION_FAILURE` | `true` | Route rejected AI output to review |
+| `RECON_INCLUDE_MASTER_MATCH_TABLE` | `false` | Optional legacy compatibility sheet |
 | `TYPE_LABELS_PATH` | `config/type_labels.json` | Label dictionary path |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 
@@ -806,6 +834,9 @@ validation_failure_rate = failed_validations / total_validations
 | `--ai-repair-batches N` | both builders | N repair-mode formalization runs |
 | `--reference-workbook PATH` | both builders | Override reference discovery |
 | `--strict` | both builders | Fail if no reference workbook |
+| `--ai-reconciliation` | both builders | Enable bounded unresolved-cluster arbitration |
+| `--ai-recon-max-batches N` | both builders | Override arbitration packet-call cap |
+| `--strict-ai-reconciliation` | both builders | Raise on provider failure instead of review fallback |
 | `--dry-run` | both builders | Plan only, no files |
 
 ### Internal constants — do not change casually
@@ -817,7 +848,7 @@ validation_failure_rate = failed_validations / total_validations
 - Type band thresholds in `type_classification.py`
 - Match status string literals (Excel formula dependencies)
 
-**Warning:** Scattering thresholds outside `config.py` / module constants increases drift risk. Only `AI_*` and paths are env-configurable today; matching tolerances are code constants.
+**Warning:** Scattering thresholds outside `config.py` / module constants increases drift risk. Deterministic first-pass constants remain local; AI arbitration tolerances and caps are centralized under `AI_RECON_*`.
 
 ---
 
@@ -929,7 +960,7 @@ Inspects: required sheets, formula counts, evidence column protection, review qu
 |----|-------------|----------|------------|-----------|---------|--------|-----------|------------|
 | R01 | AI hallucinated date repair accepted | High | Low | `ai_failed_row_repair` | Repair mode enabled | Wrong match dates | Review queue + manual PDF check | Default AI off; validate ISO re-parse; human review AI-repaired rows |
 | R02 | Token/cost overrun | Medium | Medium | AI client | Large batches, no cache | Unexpected API cost | Est. token log only today | Keep caps; enable cache; add usage logging (Recommendation) |
-| R03 | Incorrect strong match | High | Low | `matching_engine` | Duplicate refs + amounts | False reconciliation | `candidate_review` for ambiguity; validation | Human review Master_Match_Table non-strong rows |
+| R03 | Incorrect accepted match | High | Low | `matching_engine` / `ai_match_arbitration` | Duplicate refs + amounts | False reconciliation | ambiguity handling + post-validation | Human review `AI_Decision_Audit` and `Match_Evidence` |
 | R04 | Silent data corruption | High | Low | Workbook writer | Formula in evidence column | Audit trail broken | Formula audit FAIL | `audit_protected_cells` |
 | R05 | Schema drift | Medium | Medium | `LedgerRow` | Field added without writer update | Load failures | Tests, formalization validation | Coordinate dataclass + writers |
 | R06 | Formula drift | Medium | Low | Summary SUMIFS | Status string change | Wrong totals | Formula audit + inspect tool | Treat status strings as contract |
@@ -1069,14 +1100,14 @@ Uncertain matches → populate `reviewer_comment` / `manual_status` in Excel; do
 
 ### Confirmed limitations
 
-1. **No many-to-one or split matching** — one org row pairs with at most one party row.
+1. **Grouped matching requires AI arbitration** — deterministic matching remains one-to-one; bounded AI arbitration can accept validated one-to-many, many-to-one, and many-to-many groups.
 2. **Greedy matching** — no global optimization across pairs.
 3. **OCR strategy stub** — `STRATEGY_E` not implemented in PDF extractor.
 4. **AI repair scope** — party ledger date ambiguity only; org not repaired.
-5. **Working sheets** — `match_group_id` / `match_status` not populated from matches (linkage in Master_Match_Table only).
+5. **Working sheets** — final match ID, status, decision source, type, confidence, and validation status are populated directly.
 6. **Legacy AI standardization** — not connected to main reconciliation builder.
 7. **Matching tolerances** — hardcoded in `matching_engine.py`, not env-configurable.
-8. **pyproject.toml description** — still says "raw PDF context extraction stage only" while README describes full pipeline (documentation drift in package metadata).
+8. **Human audit remains mandatory** — AI placements are visible and reversible but still require workbook-level human audit before submission.
 
 ### Inferred limitations
 

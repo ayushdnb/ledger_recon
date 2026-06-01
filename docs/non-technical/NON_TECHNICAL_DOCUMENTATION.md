@@ -9,7 +9,7 @@
 - the **organisation ledger** (your company’s books for a trading partner), and  
 - the **party ledger** (the partner’s books as they see the relationship).
 
-The program reads the original **PDF ledger files**, turns them into structured spreadsheets, compares transactions using **fixed, written rules**, and produces a **reconciliation workbook** suitable for finance review and submission—after a human has checked the flagged items.
+The program reads the original **PDF ledger files**, turns them into structured spreadsheets, compares transactions using **fixed, written rules first**, optionally uses bounded AI arbitration for unresolved rows, and produces a **reconciliation workbook** suitable for finance review and submission—after a human has checked the workbook.
 
 ### Who uses it
 
@@ -68,8 +68,9 @@ flowchart TD
     B --> C[Run reconciliation command]
     C --> D[System formalizes both PDFs]
     D --> E[System matches transactions by rules]
-    E --> F[System builds Excel workbook]
-    F --> G[Human reviews queue and validation]
+    E --> F[Optional bounded AI arbitration for unresolved rows]
+    F --> K[System validates AI decisions and builds Excel workbook]
+    K --> G[Human reviews queue and validation]
     G --> H{Acceptable?}
     H -->|No| I[Investigate source PDFs / escalate]
     H -->|Yes| J[Sign off and submit]
@@ -83,14 +84,14 @@ flowchart TD
 
 3. **How processing works (plain language)**  
    - **Formalization:** The program reads each PDF page, detects columns and rows, classifies transaction types (Invoice, Payment, etc.), normalizes reference numbers, and writes a structured workbook with an audit trail.  
-   - **Reconciliation:** The program compares organisation and party **transaction rows only**, using reference numbers, amounts, dates, and transaction types under strict staged rules.  
-   - **Workbook generation:** It builds summary totals, annexures by type, a master match list, and review/validation sheets.
+   - **Reconciliation:** The program compares organisation and party **transaction rows only**, using reference numbers, amounts, dates, and transaction types under strict staged rules. Optional AI arbitration receives only compact unresolved evidence packets and Python validates each proposed placement.  
+   - **Workbook generation:** It builds summary totals, annexures by type, audit sheets, and review/validation sheets.
 
 4. **Where AI may be used (optional)**  
-   By default, **AI is turned off**. If explicitly enabled by a maintainer, AI may help with: reading difficult column layouts, suggesting dates for a small number of failed rows, or suggesting a standard label for “unknown” transaction types. AI is **never** used to decide final matches.
+   By default, **AI is turned off**. If explicitly enabled by a maintainer, AI may help with formalization and may place unresolved reconciliation rows only from supplied row IDs. Every AI placement is checked again by fixed Python rules.
 
 5. **Where fixed rules are used**  
-   All matching, summary calculations (via spreadsheet formulas tied to match results), annexure layout, and validation checks use **deterministic rules** in the program.
+   First-pass matching, summary calculations, annexure layout, and all AI post-validation checks use **deterministic rules** in the program.
 
 6. **How matching decisions are made**  
    The system tries stronger evidence first (exact reference + amount), then weaker evidence (partial reference, fuzzy reference, or amount+date without reference). Strong matches require solid reference evidence. Weak cases are marked for **manual review**, not auto-approved.
@@ -99,7 +100,7 @@ flowchart TD
    See Section 4.
 
 8. **How you should review results**  
-   Start with Validation_Report (fix FAIL, assess REVIEW), then Review_Queue (HIGH first), then Summary closing difference and Status, then non-strong rows in Master_Match_Table.
+   Start with Validation_Report (fix FAIL, assess REVIEW), then Review_Queue (HIGH first), then Summary closing difference and Status, then AI_Decision_Audit and Match_Evidence.
 
 9. **If results look wrong**  
    Trace the row back to the raw ledger sheet using `source_row_id`, open the source PDF at the listed page, and compare. Do not assume strong matches are correct without spot-checking high-value items.
@@ -139,7 +140,8 @@ flowchart TD
 | Output | Plain-English meaning |
 |--------|----------------------|
 | `formalized_ledgers__<pair>.xlsx` | Both ledgers converted to standard columns with extraction audit |
-| `final_recon_submission__<pair>.xlsx` | Main deliverable for finance review |
+| `team_recon_submission__<pair>.xlsx` | Clean main deliverable for the finance team |
+| `final_recon_submission__<pair>.xlsx` | Internal audit workbook with full reconciliation evidence |
 | `recon_workbook__<pair>.xlsx` | Same content under an internal name (Confirmed from repository: copied to submission name) |
 | Central copies under `data/04_outputs/` | Archive-friendly copies of the above |
 | Run manifest JSON | Record of which pairs ran, paths, and success/failure |
@@ -153,13 +155,22 @@ flowchart TD
 | **Org / Party raw sheets** | Every formalized row with source trace fields |
 | **Working org / party** | Rows prepared for calculations (net amounts as formulas) |
 | **Summary** | Opening/closing balances, totals by transaction type, matched/unmatched amounts, validation status |
-| **Master_Match_Table** | Every match attempt: strong, candidate, or unmatched |
+| **AI_Decision_Audit** | Decision source, confidence, validation result, and fingerprints |
+| **Match_Evidence** | Every accepted placement or unresolved cluster with row evidence |
 | **Annex_&lt;type&gt;** | Detail for each standard type (Invoice, Payment, etc.) |
 | **Unknown_Needs_Review** | Only if unclassified types exist |
 | **Review_Queue** | Prioritized list of items needing human attention |
 | **Validation_Report** | Automated checks with PASS / REVIEW / FAIL / INFO |
 | **Formula_Audit** | Confirms calculated cells use formulas correctly |
 | **Assumptions_And_Limits** | Documented constraints of the process |
+
+### Clean team workbook
+
+Open `team_recon_submission__<pair>.xlsx` for normal finance-team work. It keeps
+the standardized Working ledgers, Summary, annexures, and
+`Rows_Needing_Improvement` visible while internal audit sheets stay hidden.
+The Working ledgers are Excel Tables: paste new rows directly below the table to
+expand calculated columns, then rerun the engine for refreshed matching and annexures.
 
 ### Reviewer-owned columns (always start blank)
 
@@ -181,14 +192,15 @@ flowchart TD
 | Table | Purpose |
 |-------|---------|
 | **Summary** | Big-picture: do org and party totals align by category? What is matched vs unmatched? |
-| **Master_Match_Table** | Line-by-line evidence of what was paired or left open |
+| **AI_Decision_Audit** | Fast review of deterministic, AI, and human-review-required decisions |
+| **Match_Evidence** | Line-by-line evidence of what was paired or left open |
 | **Annex sheets** | Drill-down for one transaction type at a time |
 | **Review_Queue** | Your to-do list |
 | **Validation_Report** | Automated quality gate |
 
 ### Calculations performed
 
-**Confirmed from repository:** Most rollups in Summary and annexures are **Excel formulas** (e.g. SUMIFS) written by the program. They sum amounts from Working sheets and Master_Match_Table based on transaction type and match status.
+**Confirmed from repository:** Most rollups in Summary and annexures are **Excel formulas** (e.g. SUMIFS) written by the program. They sum amounts from Working sheets and Match_Evidence based on transaction type and match status.
 
 **Working sheet net amounts:**
 
@@ -215,7 +227,7 @@ These formulas are created in the workbook; changing them manually may break the
 
 - All Review_Queue HIGH items  
 - Validation_Report FAIL and REVIEW rows  
-- Master_Match_Table rows where `match_status` is not `matched_strong`  
+- Every accepted AI row in `AI_Decision_Audit` and unresolved row in `Match_Evidence`  
 - Summary **Closing Balance Difference** and **Status**  
 - Unknown types and AI-repaired dates (if AI was used)
 
@@ -261,7 +273,7 @@ The system applies **stages in order**:
 6. Remaining org rows → **Unmatched organisation**.  
 7. Remaining party rows → **Unmatched party**.
 
-If multiple rows share the same reference and amount, the system **does not guess**—it marks **candidate for review**.
+If multiple rows share the same reference and amount, deterministic matching emits an unresolved cluster. When arbitration is enabled, AI may choose supplied row IDs only; Python rejects impossible, conflicting, or low-confidence output.
 
 ### When a match may be wrong
 
@@ -275,9 +287,9 @@ If multiple rows share the same reference and amount, the system **does not gues
 
 Any row with `review_required = TRUE`, unmatched status, unknown type, formalization flags, closing balance mismatch, or Validation_Report REVIEW/FAIL.
 
-### Why deterministic matching is safer than unnecessary AI
+### Why deterministic-first matching remains important
 
-Matches affect financial conclusions. Fixed rules are **repeatable**, **explainable** (each row shows `match_rule`), and **free of model hallucination**. AI in this project is limited to reading messy inputs—not deciding matches.
+Matches affect financial conclusions. Fixed rules are **repeatable** and **explainable**. AI is limited to unresolved evidence packets, cannot invent rows, and cannot place anything until deterministic post-validation passes.
 
 ### What to check before trusting results
 
@@ -299,11 +311,12 @@ Matches affect financial conclusions. Fixed rules are **repeatable**, **explaina
 | Failed row repair | Suggest a **date** for a few party rows the parser could not read confidently |
 | Unknown label grouping | Suggest which **predefined** standard label fits an unknown raw type |
 | Legacy standardization | Separate optional path—not used in the default reconciliation command |
-| Connectivity check | During reconciliation build, a **empty test message** may verify AI is reachable—**no ledger data sent** |
+| Reconciliation arbitration | Place unresolved supplied row IDs after deterministic matching fails |
 
-### What AI is **not** used for
+### What AI is **not** allowed to do
 
-- Deciding whether two transactions match  
+- Override a strong deterministic match  
+- Invent a transaction, amount, date, voucher, reference, or row ID  
 - Calculating summary totals or closing balances  
 - Creating new transaction types not in the config file  
 - Sending whole PDF files or full ledgers to a model (by design)
@@ -328,7 +341,8 @@ Everything in the Review_Queue, all Validation FAIL/REVIEW items, candidate matc
 - Small text snippets from failed rows (capped length)  
 - Sample layout lines (capped count)  
 - Lists of unknown raw type strings  
-- **Not** sent: full ledgers, match decisions, or PDF binaries (Confirmed from repository: project rules and AI module comments)
+- Compact unresolved candidate packets with row IDs and minimal row evidence  
+- **Not** sent: full ledgers, workbooks, sheets, or PDF binaries
 
 ### If AI output is wrong or unavailable
 
@@ -431,7 +445,8 @@ Single pair:
 
 ### After running
 
-- [ ] Open `final_recon_submission__<pair>.xlsx`  
+- [ ] Open `team_recon_submission__<pair>.xlsx` for the finance team
+- [ ] Keep `final_recon_submission__<pair>.xlsx` for audit review
 - [ ] Run inspect tool if maintainer provides command  
 - [ ] Save a dated copy for records  
 
@@ -446,7 +461,8 @@ Single pair:
 - [ ] Validation_Report: zero FAIL; all REVIEW assessed  
 - [ ] Review_Queue: all HIGH resolved or documented  
 - [ ] Summary: Status and closing difference acceptable  
-- [ ] Master_Match_Table: candidates and unmatched explained  
+- [ ] AI_Decision_Audit: AI placements sampled and validation status checked  
+- [ ] Match_Evidence: candidates and unmatched explained  
 - [ ] Unknown_Needs_Review (if present): disposition recorded  
 - [ ] Reviewer columns completed where decisions made  
 
@@ -465,10 +481,10 @@ Single pair:
 No. The README explicitly requires human review before team submission. Strong matches are rule-based, not guaranteed correct.
 
 **Where is AI used?**  
-Only in optional formalization helpers and a separate legacy standardization path—**not** in matching. Default configuration uses no AI.
+In optional formalization helpers and, when explicitly enabled, bounded reconciliation arbitration for unresolved rows. Default configuration uses no AI.
 
 **Does AI make final match decisions?**  
-No. **Confirmed from repository:** validation includes `no_reconciliation_ai_decisions` as a permanent PASS assertion.
+Yes, but only for unresolved evidence packets. AI may select supplied row IDs only, and Python must deterministically validate the placement before it appears as accepted.
 
 **What should I do if a match looks wrong?**  
 Document in `reviewer_comment` / `manual_status`, verify both sides in the PDF using row IDs, and escalate if material.
@@ -497,10 +513,10 @@ Source PDFs, run date, command used, output workbook copies, run manifest, revie
 
 ### Confirmed limitations (plain language)
 
-- The system matches **one org row to one party row**; it cannot split a single payment across many invoices automatically.  
+- Deterministic matching remains one-to-one. Optional AI arbitration can place one-to-many, many-to-one, and many-to-many groups only when totals and invariants validate.  
 - It cannot read **scanned image-only PDFs** reliably (OCR path is not implemented).  
 - **Optional AI date repair** applies only to the party ledger, not the organisation ledger.  
-- **Working sheets** do not show match IDs; use Master_Match_Table for pairings.  
+- **Working sheets** show final match IDs, status, decision source, match type, confidence, and validation status.  
 - The separate **AI standardization** feature is not part of the default reconciliation command.  
 
 ### Missing information

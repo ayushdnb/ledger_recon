@@ -66,6 +66,13 @@ FORMALIZATION_AI_MODES_ACTIVE = {
     FORMALIZATION_AI_GROUP,
 }
 
+# Reconciliation AI modes. ``off`` is the safe default; ``arbitrate`` enables the
+# bounded AI reconciliation arbitration layer for unresolved deterministic cases.
+AI_RECON_OFF = "off"
+AI_RECON_ARBITRATE = "arbitrate"
+AI_RECON_MODES = (AI_RECON_OFF, AI_RECON_ARBITRATE)
+AI_RECON_MODES_ACTIVE = {AI_RECON_ARBITRATE}
+
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -154,6 +161,21 @@ class Settings(BaseModel):
     )
     formalization_min_page_confidence_for_ai: float = 70.0
 
+    # Reconciliation AI arbitration (deterministic-first, AI for unresolved cases).
+    ai_reconciliation_enabled: bool = False
+    ai_reconciliation_mode: str = AI_RECON_OFF
+    ai_recon_max_input_tokens_per_request: int = 3000
+    ai_recon_max_output_tokens: int = 1024
+    ai_recon_max_candidates_per_packet: int = 12
+    ai_recon_amount_tolerance: float = 0.01
+    ai_recon_date_tolerance_days: int = 7
+    ai_recon_min_confidence: float = 0.75
+    ai_recon_cache_enabled: bool = True
+    ai_recon_cache_dir: Path = Path("data/04_outputs/reconciliation_ai_cache")
+    ai_recon_max_batches: int = 50
+    ai_recon_review_on_validation_failure: bool = True
+    recon_include_master_match_table: bool = False
+
     def resolved(self, path: Path) -> Path:
         """Resolve a (possibly relative) path against the project root."""
         return path if path.is_absolute() else (self.project_root / path)
@@ -169,6 +191,19 @@ class Settings(BaseModel):
     def formalization_ai_enabled(self) -> bool:
         """True when the formalization stage is configured to use AI at all."""
         return self.ai_formalization_mode in FORMALIZATION_AI_MODES_ACTIVE
+
+    def ai_reconciliation_active(self) -> bool:
+        """True when reconciliation AI arbitration is configured and enabled."""
+        return self.ai_reconciliation_enabled and self.ai_reconciliation_mode in AI_RECON_MODES_ACTIVE
+
+    def ensure_reconciliation_ai_allowed(self) -> None:
+        """Validate that a reconciliation AI arbitration call is permitted."""
+        if not self.ai_reconciliation_active():
+            raise RuntimeError(
+                "Reconciliation AI is off (AI_RECONCILIATION_ENABLED=false or "
+                "AI_RECONCILIATION_MODE=off). Enable arbitration to call the model."
+            )
+        self.ensure_ai_call_allowed()
 
     def ensure_formalization_ai_allowed(self) -> None:
         """Validate that a formalization AI call is permitted, else raise.
@@ -290,6 +325,31 @@ def _build_settings() -> Settings:
         ),
         formalization_min_page_confidence_for_ai=_env_float(
             "FORMALIZATION_MIN_PAGE_CONFIDENCE_FOR_AI", 70.0
+        ),
+        ai_reconciliation_enabled=_env_bool("AI_RECONCILIATION_ENABLED", False),
+        ai_reconciliation_mode=_env_choice(
+            "AI_RECONCILIATION_MODE", AI_RECON_OFF, AI_RECON_MODES
+        ),
+        ai_recon_max_input_tokens_per_request=_env_int(
+            "AI_RECON_MAX_INPUT_TOKENS_PER_REQUEST", 3000
+        ),
+        ai_recon_max_output_tokens=_env_int("AI_RECON_MAX_OUTPUT_TOKENS", 1024),
+        ai_recon_max_candidates_per_packet=_env_int(
+            "AI_RECON_MAX_CANDIDATES_PER_PACKET", 12
+        ),
+        ai_recon_amount_tolerance=_env_float("AI_RECON_AMOUNT_TOLERANCE", 0.01),
+        ai_recon_date_tolerance_days=_env_int("AI_RECON_DATE_TOLERANCE_DAYS", 7),
+        ai_recon_min_confidence=_env_float("AI_RECON_MIN_CONFIDENCE", 0.75),
+        ai_recon_cache_enabled=_env_bool("AI_RECON_CACHE_ENABLED", True),
+        ai_recon_cache_dir=Path(
+            os.getenv("AI_RECON_CACHE_DIR", "data/04_outputs/reconciliation_ai_cache")
+        ),
+        ai_recon_max_batches=_env_int("AI_RECON_MAX_BATCHES", 50),
+        ai_recon_review_on_validation_failure=_env_bool(
+            "AI_RECON_REVIEW_ON_VALIDATION_FAILURE", True
+        ),
+        recon_include_master_match_table=_env_bool(
+            "RECON_INCLUDE_MASTER_MATCH_TABLE", False
         ),
     )
 

@@ -27,6 +27,7 @@ MODULES = [
     ("src.formalization.validation", "build_validation_report"),
     ("src.formalization.workbook_writer", "write_formalized_workbook"),
     ("src.formalization.formalize_pair_ledgers", "main"),
+    ("src.reconciliation.ai_match_arbitration", "arbitrate_unresolved_matches"),
 ]
 
 

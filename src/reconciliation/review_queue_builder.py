@@ -1,8 +1,8 @@
 """Build a human-usable, prioritised review queue.
 
-Every row that lacks deterministic evidence is surfaced here rather than being
-silently closed. Manual columns (reviewer_comment, manual_status, resolved_by,
-resolved_date) are always emitted blank so a reviewer can fill them in Excel.
+Only unresolved, formalization-flagged, or validation-rejected work is surfaced
+here. Manual columns (reviewer_comment, manual_status, resolved_by, resolved_date)
+are always emitted blank so a reviewer can fill them in Excel.
 """
 
 from __future__ import annotations
@@ -69,6 +69,8 @@ def _match_priority(m: MatchRecord) -> str:
 
 
 def _suggested_action(m: MatchRecord) -> str:
+    if m.validation_status == "REJECTED":
+        return "Review AI validation rejection against both source ledgers."
     if m.match_status == "unmatched_org":
         return "Locate corresponding party entry or confirm org-only item."
     if m.match_status == "unmatched_party":
@@ -133,7 +135,7 @@ def build_review_queue(
                 {
                     "priority": _match_priority(m),
                     "source_area": "reconciliation",
-                    "source_sheet": "Master_Match_Table",
+                    "source_sheet": "Match_Evidence",
                     "source_row_id": m.org_row_id or m.party_row_id or m.match_group_id,
                     "type_label": m.type_label,
                     "date": m.org_date or m.party_date,

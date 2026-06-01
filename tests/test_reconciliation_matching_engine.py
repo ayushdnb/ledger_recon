@@ -20,6 +20,7 @@ def _row(
     type_label: str = "Invoice",
     amount: float = 100.0,
 ) -> ReconRow:
+    source_amount = amount if role.startswith("org") else -amount
     return ReconRow(
         data={
             "row_id": row_id,
@@ -30,6 +31,8 @@ def _row(
             "date": date,
             "normalized_date": date,
             "type_label": type_label,
+            "debit_source": max(source_amount, 0.0),
+            "credit_source": max(-source_amount, 0.0),
             "debit_org_perspective": amount if amount >= 0 else 0.0,
             "credit_org_perspective": abs(amount) if amount < 0 else 0.0,
             "raw_type": type_label,
@@ -55,16 +58,24 @@ def test_containment_reference_match() -> None:
 
 def test_fuzzy_reference_goes_review() -> None:
     org = [_row("o1", role="org_ledger", nref="SA/PB/2425/017", amount=500.0)]
-    party = [_row("p1", role="party_ledger", nref="SA/PB/2425/071", amount=500.0)]
+    party = [
+        _row(
+            "p1",
+            role="party_ledger",
+            nref="SA/PB/2425/071",
+            date="2025-01-02",
+            amount=500.0,
+        )
+    ]
     result = reconcile_rows(org, party)
     assert any(r.review_required for r in result.records)
 
 
 def test_missing_reference_goes_review() -> None:
     org = [_row("o1", role="org_ledger", nref="", amount=500.0)]
-    party = [_row("p1", role="party_ledger", nref="", amount=500.0)]
+    party = [_row("p1", role="party_ledger", nref="", date="2025-01-02", amount=500.0)]
     result = reconcile_rows(org, party)
-    assert any("stage5_no_ref" in r.match_rule for r in result.records)
+    assert any("stage6_no_ref" in r.match_rule for r in result.records)
 
 
 def test_duplicate_candidates_go_review() -> None:
@@ -123,13 +134,13 @@ def test_blank_vs_blank_does_not_strong_match() -> None:
     assert not any(r.match_status == "matched_strong" for r in result.records)
 
 
-def test_missing_ref_exact_amount_is_candidate_review_at_most() -> None:
+def test_missing_ref_exact_amount_is_supported_but_never_strong() -> None:
     org = [_row("o1", role="org_ledger", nref="None", amount=500.0, type_label="Invoice")]
     party = [_row("p1", role="party_ledger", nref="None", amount=500.0, type_label="Invoice")]
     result = reconcile_rows(org, party)
     statuses = {r.match_status for r in result.records}
     assert "matched_strong" not in statuses
-    assert "candidate_review" in statuses
+    assert "matched_supported" in statuses
 
 
 def test_missing_ref_strong_match_count_is_zero() -> None:
@@ -150,7 +161,7 @@ def test_missing_ref_strong_match_count_is_zero() -> None:
 
 def test_missing_ref_candidate_carries_review_flag_and_reason() -> None:
     org = [_row("o1", role="org_ledger", nref="None", amount=500.0)]
-    party = [_row("p1", role="party_ledger", nref="None", amount=500.0)]
+    party = [_row("p1", role="party_ledger", nref="None", date="2025-01-02", amount=500.0)]
     result = reconcile_rows(org, party)
     candidates = [r for r in result.records if r.match_status == "candidate_review"]
     assert candidates, "expected at least one candidate_review row"
@@ -165,3 +176,16 @@ def test_present_ref_vs_missing_ref_does_not_strong_match() -> None:
     result = reconcile_rows(org, party)
     assert not any(r.match_status == "matched_strong" for r in result.records)
 
+
+def test_same_side_polarity_is_not_accepted() -> None:
+    org = [_row("o1", role="org_ledger", nref="", amount=500.0)]
+    party = [_row("p1", role="org_ledger", nref="", amount=500.0)]
+    result = reconcile_rows(org, party)
+    assert not any(r.match_status in {"matched_strong", "matched_supported"} for r in result.records)
+
+
+def test_candidate_row_is_not_emitted_again_as_unmatched() -> None:
+    org = [_row("o1", role="org_ledger", nref="", amount=500.0)]
+    party = [_row("p1", role="party_ledger", nref="", date="2025-01-02", amount=500.0)]
+    result = reconcile_rows(org, party)
+    assert [r.match_status for r in result.records] == ["candidate_review"]

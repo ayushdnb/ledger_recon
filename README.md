@@ -11,7 +11,7 @@ in stages so that every step is auditable and traceable back to the original doc
 
 ## Current scope: full reconciliation workbook generation
 
-The project now supports **final, deterministic reconciliation workbook generation**.
+The project supports **deterministic-first, AI-arbitrated reconciliation workbook generation**.
 The pipeline runs in disciplined stages so every step is auditable:
 
 1. **Raw PDF context extraction** - reads the source PDFs for a ledger pair and writes
@@ -19,31 +19,34 @@ The pipeline runs in disciplined stages so every step is auditable:
 2. **Deterministic formalization** - parses each PDF into a strict, audit-ready, two-ledger
    workbook (canonical schema, opening/closing balances, per-page audit, review queue).
    AI is **optional** here and only ever used in a token-controlled way (see below).
-3. **Deterministic reconciliation** - Python matches organisation and party transactions
-   (staged exact/containment/fuzzy reference + amount + date + type-mirror rules), builds
-   annexures by canonical label, a styled Summary, a Master Match Table, a Review Queue, a
-   Validation Report, a Formula Audit, and writes a submission-quality workbook visually
-   modeled on the STARTLING ACHIEVEMENT reference workbook.
+3. **Deterministic-first reconciliation** - Python preserves exact/high-confidence matches
+   and emits compact unresolved clusters.
+4. **Optional AI arbitration** - when explicitly enabled, AI may place unresolved rows only
+   from supplied evidence IDs. Python deterministically post-validates every AI decision.
+5. **Workbook generation** - writes audit-focused sheets, annexures, Summary, Review Queue,
+   Validation Report, and Formula Audit in the STARTLING ACHIEVEMENT visual style.
 
 ### Division of responsibility (architecture)
 
-- **Deterministic Python owns** reconciliation, matching, annexure generation, summary
-  generation, validation, formula generation, and workbook writing.
-- **AI may only assist** with messy source interpretation, and never makes a final match
-  decision. The three bounded AI modes are:
+- **Deterministic Python owns** first-pass matching, post-validation, annexure generation,
+  summary generation, formula generation, and workbook writing.
+- **AI may assist** with messy source interpretation. The three bounded formalization modes are:
   - `layout_only` - profile column layout from a tiny sample,
   - `repair_failed_rows` - repair only the specific failed rows sent to it (dates),
   - `group_unknown_labels` - map a deterministically-unclassified row ("Unknown") to a
     predefined canonical label, or return `UnknownNeedsReview`. It can never invent a new
     canonical label; canonical labels live only in `config/type_labels.json`.
+- **AI reconciliation arbitration** may make final placements only for unresolved clusters,
+  only from supplied row IDs, and only after deterministic post-validation. Invalid,
+  impossible, or low-confidence output goes to `Review_Queue`.
 - All AI usage is **input-limited** (character cap + conservative estimated-token budget)
   and **output-limited** (`max_tokens`), so free/limited tiers stay bounded. The default
-  `AI_FORMALIZATION_MODE=off` guarantees no model is ever called.
+  `AI_FORMALIZATION_MODE=off` guarantees no model is called from formalization.
 
 Type labels (Invoice, Payment, etc.) are **standardization labels only**, not reconciliation
 decisions. A "Sale" on the organisation side maps to the same `Invoice` label as a
-"Purchase" on the party side; the deterministic reconciliation engine decides the actual
-correspondence.
+"Purchase" on the party side; deterministic matching runs first and bounded arbitration
+may decide unresolved correspondence when enabled.
 
 ## Folder structure
 
@@ -124,6 +127,7 @@ recon/
       build_recon_workbook.py            # single-pair builder (CLI)
       build_all_recon_workbooks.py       # all-pairs runner + run manifest (CLI)
       matching_engine.py                 # staged deterministic org<->party matching
+      ai_match_arbitration.py            # compact packets + strict AI arbitration + validation
       annexure_builder.py / summary_builder.py / review_queue_builder.py
       unknown_label_builder.py           # deterministic Unknown-label grouping report
       workbook_writer.py / workbook_style.py   # submission workbook + curated styling
@@ -234,22 +238,40 @@ Optional bounded AI repair (only with `.env` configured and hosted approval set)
 
 Flags (forwarded to every pair by the all-pairs runner):
 `--refresh-formalized`, `--ai-repair-batches <n>`, `--reference-workbook <path>`,
-`--strict` (fail if no reference workbook found), `--dry-run` (plan only, no files).
+`--strict` (fail if no reference workbook found), `--dry-run` (plan only, no files),
+`--ai-reconciliation`, `--ai-recon-max-batches <n>`, and `--strict-ai-reconciliation`.
+
+Optional bounded reconciliation arbitration (requires configured AI gate and hosted approval):
+
+```powershell
+.\.venv\Scripts\python.exe -m src.reconciliation.build_recon_workbook --pair-id pair_001_baby_and_mom__good_luck --ai-reconciliation --ai-recon-max-batches 10
+```
 
 ### Where outputs are written
 
 - Per pair: `data/02_work_pairs/<pair_id>/output/final_recon_submission__<pair_id>.xlsx`
   (and `recon_workbook__<pair_id>.xlsx`).
+- Clean finance-team copy:
+  `data/02_work_pairs/<pair_id>/output/team_recon_submission__<pair_id>.xlsx`.
 - Central copies: `data/04_outputs/final_recon_submissions/` and
-  `data/04_outputs/reconciliation_workbooks/`.
+  `data/04_outputs/reconciliation_workbooks/`, plus
+  `data/04_outputs/team_recon_submissions/`.
 - Run manifest: `data/04_outputs/run_manifests/recon_run_<timestamp>.json`.
 
 ### Final workbook sheets
 
 `README`, `Executive_Summary`, the two raw ledger sheets + their `Working` sheets,
-`Summary`, `Master_Match_Table`, one `Annex_<label>` per canonical label, an optional
+`Summary`, `AI_Decision_Audit`, `Match_Evidence`, one `Annex_<label>` per canonical label, an optional
 `Unknown_Needs_Review` annexure (only when unclassified rows exist), `Review_Queue`,
 `Validation_Report`, `Formula_Audit`, and `Assumptions_And_Limits`.
+`Master_Match_Table` is an optional legacy compatibility sheet controlled by
+`RECON_INCLUDE_MASTER_MATCH_TABLE=false`.
+
+The team copy keeps `Team_Guide`, standardized `Working` ledger tables, `Summary`,
+annexures, and `Rows_Needing_Improvement` visible. Internal audit sheets remain
+embedded but hidden. Paste new rows directly below a `Working` ledger table to let
+Excel expand calculated columns; rerun the engine to regenerate authoritative
+matching, annexures, and review rows.
 
 ### Inspect / validate a generated workbook
 
@@ -278,9 +300,9 @@ The reconciliation builder reads the resulting profile
 and applies a curated theme (header/banner palette, page orientation, fit-to-width) on
 top of a clean default palette. If the profile is missing, the curated default is used.
 
-## AI usage limits and repair mode
+## AI usage limits, repair mode, and reconciliation arbitration
 
-- `AI_FORMALIZATION_MODE=off` (default) means no model is ever called.
+- `AI_FORMALIZATION_MODE=off` (default) means no model is called from formalization.
 - Active modes (`layout_only`, `repair_failed_rows`, `group_unknown_labels`) still require
   the global gate: `AI_ENABLED=true` and, for hosted providers,
   `AI_DATA_APPROVAL=hosted_approved`.
@@ -294,6 +316,11 @@ top of a clean default palette. If the profile is missing, the curated default i
 - Token limits: `AI_MAX_INPUT_TOKENS_PER_REQUEST` rejects oversized requests before any
   network call (input tokens estimated conservatively), and `AI_MAX_OUTPUT_TOKENS` is sent
   to the provider as `max_tokens`. The API key is stored as a secret and never logged.
+- Reconciliation arbitration is off by default. Set `AI_RECONCILIATION_ENABLED=true` and
+  `AI_RECONCILIATION_MODE=arbitrate`, or pass `--ai-reconciliation`.
+- Arbitration sends only compact unresolved candidate packets, deduplicates repeated text,
+  caches by deterministic fingerprint, accepts only supplied row IDs, and validates row
+  ownership, grouped totals, polarity, dates, references, and confidence before placement.
 
 ## Privacy and financial-data handling
 
@@ -311,7 +338,7 @@ Before sending a workbook to the finance team, a human must review:
 - every row in `Review_Queue` (HIGH priority first), and any `Unknown_Needs_Review` rows;
 - the `Validation_Report` (resolve all `FAIL`, assess every `REVIEW`);
 - the closing-balance difference and the reconciliation `Status` on the `Summary`;
-- candidate (non-strong) matches in `Master_Match_Table`;
+- every AI placement in `AI_Decision_Audit` and unresolved row in `Match_Evidence`;
 - the reviewer-owned columns (`reviewer_comment`, `manual_status`), intentionally left blank.
 
 ## Run raw extraction for a ledger pair
@@ -401,9 +428,8 @@ Outputs:
 .\.venv\Scripts\python.exe -m src.tools.inspect_recon_workbook "data/02_work_pairs/pair_001_baby_and_mom__good_luck/output/final_recon_submission__pair_001_baby_and_mom__good_luck.xlsx" "data/02_work_pairs/pair_002_elegant_crafts_india/output/final_recon_submission__pair_002_elegant_crafts_india.xlsx"
 ```
 
-The default `build_all_recon_workbooks --refresh-formalized` is deterministic (no AI).
-Do **not** add `--ai-repair-batches` unless `.env` is configured and `AI_DATA_APPROVAL`
-is set correctly.
+The default `build_all_recon_workbooks --refresh-formalized` remains deterministic-only.
+Do **not** add AI flags unless `.env` is configured and `AI_DATA_APPROVAL` is set correctly.
 
 ## WARNING — do not leak financial data
 
