@@ -27,8 +27,11 @@ def final_closing_balance(rows: list[ReconRow]) -> float | None:
     When multiple closing-balance rows exist (repeated fiscal sections), select the
     row with the highest page/source order — the last closing in document order.
     """
+    final = final_closing_row(rows)
+    return final.net_org if final is not None else None
+
+
+def final_closing_row(rows: list[ReconRow]) -> ReconRow | None:
+    """Return the final-period closing-balance row with its source trace."""
     closing_rows = [r for r in rows if r.type_label == CLOSING_LABEL]
-    if not closing_rows:
-        return None
-    final = max(closing_rows, key=_row_order_key)
-    return final.net_org
+    return max(closing_rows, key=_row_order_key) if closing_rows else None

@@ -214,6 +214,52 @@ def test_amount_mismatch_is_rejected(tmp_path: Path) -> None:
     assert result.rejection_reason == "amount_mismatch"
 
 
+def test_missing_issue_code_is_rejected(tmp_path: Path) -> None:
+    org, party = _unresolved_pair()
+    packet = build_candidate_packets(
+        org, party, reconcile_rows(org, party).records, config=_config(tmp_path)
+    )[0]
+    decision = AIMatchDecision(**{**_decision(), "reason_code": ""})
+    result = validate_ai_decision(
+        decision, packet, {"o1": org[0]}, {"p1": party[0]}, config=_config(tmp_path)
+    )
+    assert result.rejection_reason == "issue_code_not_allowed"
+
+
+def test_grouped_amount_requires_group_cardinality(tmp_path: Path) -> None:
+    org, party = _unresolved_pair()
+    packet = build_candidate_packets(
+        org, party, reconcile_rows(org, party).records, config=_config(tmp_path)
+    )[0]
+    decision = AIMatchDecision(**{**_decision(), "match_type": "grouped_amount"})
+    result = validate_ai_decision(
+        decision, packet, {"o1": org[0]}, {"p1": party[0]}, config=_config(tmp_path)
+    )
+    assert result.rejection_reason == "grouped_amount_requires_group_cardinality"
+
+
+def test_rounding_decision_uses_label_aware_tolerance(tmp_path: Path) -> None:
+    org = [_row("o1", "org", 100.0)]
+    party = [_row("p1", "party", 100.03, date="2025-01-02")]
+    config = _config(
+        tmp_path,
+        recon_label_tolerance_overrides={"Invoice": {"rounding_tolerance": 0.05}},
+    )
+    packet = build_candidate_packets(
+        org, party, reconcile_rows(org, party).records, config=config
+    )[0]
+    decision = AIMatchDecision(
+        **{
+            **_decision(match_type="rounding", amount_delta=0.03),
+            "reason_code": "rounding",
+        }
+    )
+    result = validate_ai_decision(
+        decision, packet, {"o1": org[0]}, {"p1": party[0]}, config=config
+    )
+    assert result.accepted is True
+
+
 def test_valid_one_to_one_ai_decision_is_accepted(tmp_path: Path) -> None:
     org, party = _unresolved_pair()
     result = arbitrate_unresolved_matches(

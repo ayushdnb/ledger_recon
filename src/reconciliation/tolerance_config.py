@@ -8,7 +8,7 @@ Every tolerance applied during matching is recorded in match evidence.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Mapping
 
 # Canonical label keys aligned with config/type_labels.json.
 LABEL_KEYS = (
@@ -40,6 +40,8 @@ DEFAULT_MAX_COMBINATION_SEARCH_SIZE = 8
 DEFAULT_SMALL_WRITE_OFF_THRESHOLD = 1.0
 DEFAULT_BANK_CHARGE_THRESHOLD = 50.0
 DEFAULT_DISCOUNT_THRESHOLD = 100.0
+
+_INTEGER_FIELDS = frozenset({"date_tolerance_days", "max_combination_search_size"})
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,53 @@ class ReconTolerancePolicy:
                 org_t.max_combination_search_size, party_t.max_combination_search_size
             ),
         )
+
+
+def _validate_label_tolerance(label: str, values: Mapping[str, Any]) -> None:
+    allowed = frozenset(LabelTolerance.__dataclass_fields__)
+    unknown = sorted(set(values) - allowed)
+    if unknown:
+        raise ValueError(
+            f"Unsupported reconciliation tolerance override(s) for {label!r}: "
+            f"{', '.join(unknown)}."
+        )
+    for field_name, raw in values.items():
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError(
+                f"Reconciliation tolerance override {label}.{field_name} must be numeric."
+            )
+        if raw < 0:
+            raise ValueError(
+                f"Reconciliation tolerance override {label}.{field_name} must be non-negative."
+            )
+        if field_name in _INTEGER_FIELDS and not isinstance(raw, int):
+            raise ValueError(
+                f"Reconciliation tolerance override {label}.{field_name} must be an integer."
+            )
+        if field_name == "fuzzy_reference_threshold" and raw > 1:
+            raise ValueError(
+                f"Reconciliation tolerance override {label}.{field_name} must be <= 1."
+            )
+
+
+def _with_label_overrides(
+    policy: ReconTolerancePolicy,
+    custom: Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, LabelTolerance]:
+    """Merge validated operator overrides over the conservative defaults."""
+    merged = dict(policy.label_overrides)
+    for label, values in (custom or {}).items():
+        if not isinstance(label, str) or not label.strip() or not isinstance(values, Mapping):
+            raise ValueError("Reconciliation label tolerance overrides must map labels to objects.")
+        _validate_label_tolerance(label, values)
+        current = policy.for_label(label)
+        payload = {
+            field_name: getattr(current, field_name)
+            for field_name in LabelTolerance.__dataclass_fields__
+        }
+        payload.update(values)
+        merged[label.strip()] = LabelTolerance(**payload)
+    return merged
 
 
 def _label_override(
@@ -200,8 +249,26 @@ def build_tolerance_policy(
     small_write_off_threshold: float = DEFAULT_SMALL_WRITE_OFF_THRESHOLD,
     bank_charge_threshold: float = DEFAULT_BANK_CHARGE_THRESHOLD,
     discount_threshold: float = DEFAULT_DISCOUNT_THRESHOLD,
+    label_overrides: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ReconTolerancePolicy:
     """Build the authoritative tolerance policy for deterministic reconciliation."""
+    _validate_label_tolerance(
+        "global",
+        {
+            "amount_tolerance": amount_tolerance,
+            "rounding_tolerance": rounding_tolerance,
+            "date_tolerance_days": date_tolerance_days,
+            "fuzzy_reference_threshold": fuzzy_reference_threshold,
+            "small_write_off_threshold": small_write_off_threshold,
+            "bank_charge_threshold": bank_charge_threshold,
+            "discount_threshold": discount_threshold,
+            "max_combination_search_size": max_combination_search_size,
+        },
+    )
+    if not 0 <= ai_min_confidence <= 1:
+        raise ValueError("AI reconciliation minimum confidence must be between 0 and 1.")
+    if max_candidate_packet_size < 1:
+        raise ValueError("AI reconciliation candidate packet size must be positive.")
     base = ReconTolerancePolicy(
         amount_tolerance=amount_tolerance,
         rounding_tolerance=rounding_tolerance,
@@ -216,6 +283,20 @@ def build_tolerance_policy(
         label_overrides={},
     )
     overrides = build_default_label_overrides(base)
+    defaults = ReconTolerancePolicy(
+        amount_tolerance=amount_tolerance,
+        rounding_tolerance=rounding_tolerance,
+        date_tolerance_days=date_tolerance_days,
+        fuzzy_reference_threshold=fuzzy_reference_threshold,
+        ai_min_confidence=ai_min_confidence,
+        max_candidate_packet_size=max_candidate_packet_size,
+        max_combination_search_size=max_combination_search_size,
+        small_write_off_threshold=small_write_off_threshold,
+        bank_charge_threshold=bank_charge_threshold,
+        discount_threshold=discount_threshold,
+        label_overrides=overrides,
+    )
+    overrides = _with_label_overrides(defaults, label_overrides)
     return ReconTolerancePolicy(
         amount_tolerance=amount_tolerance,
         rounding_tolerance=rounding_tolerance,

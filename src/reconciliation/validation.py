@@ -17,6 +17,7 @@ from src.reconciliation.recon_models import (
 )
 
 _AMOUNT_TOLERANCE = settings.recon_amount_tolerance
+_ACCEPTED_STATUSES = {"matched_strong", "matched_supported", "matched_ai"}
 
 
 def _status(condition: bool, fail: bool = False) -> str:
@@ -27,6 +28,16 @@ def _status(condition: bool, fail: bool = False) -> str:
 
 def _stated_closing(rows: list[ReconRow]) -> float | None:
     return final_closing_balance(rows)
+
+
+def _record_ids(match: MatchRecord, side: str) -> list[str]:
+    plural = match.org_row_ids if side == "org" else match.party_row_ids
+    singular = match.org_row_id if side == "org" else match.party_row_id
+    return list(dict.fromkeys(plural or ([singular] if singular else [])))
+
+
+def _sign(value: float) -> int:
+    return 1 if value > 0 else -1 if value < 0 else 0
 
 
 def build_validation_items(
@@ -41,6 +52,7 @@ def build_validation_items(
     formula_audit_failures: int,
     formula_audit: list[FormulaAuditItem] | None = None,
     review_queue_count: int | None = None,
+    review_queue_rows: list[dict[str, object]] | None = None,
 ) -> list[ValidationItem]:
     """Build reconciliation validation rows."""
     items: list[ValidationItem] = []
@@ -57,6 +69,7 @@ def build_validation_items(
         r.normalized_reference for r in tx_party if not is_missing_reference(r.normalized_reference)
     )
     unknown_tx = sum(1 for r in tx_org + tx_party if r.type_label == "Unknown")
+    source_rows_missing_id = sum(1 for r in org_rows + party_rows if not r.row_id)
 
     items.extend(
         [
@@ -107,7 +120,20 @@ def build_validation_items(
                 unknown_tx,
                 "Transaction rows whose type could not be classified.",
             ),
-            ValidationItem("rows_dropped", pair_id, "PASS", 0, "No source rows dropped."),
+            ValidationItem(
+                "source_rows_missing_row_id",
+                pair_id,
+                _status(source_rows_missing_id == 0, fail=True),
+                source_rows_missing_id,
+                "Every loaded source row must retain its deterministic row ID.",
+            ),
+            ValidationItem(
+                "rows_dropped",
+                pair_id,
+                "PASS",
+                0,
+                "Workbook writer retains every loaded source row in the raw and working sheets.",
+            ),
             ValidationItem(
                 "review_rows_count",
                 pair_id,
@@ -127,6 +153,11 @@ def build_validation_items(
     many_candidates = sum(1 for m in matches if "ambiguous" in m.review_reason.lower())
     ai_decisions = sum(1 for m in matches if m.decision_source == "AI")
     ai_rejected = sum(1 for m in matches if m.validation_status == "REJECTED")
+    allocation_matches = sum(
+        1
+        for m in matches
+        if m.match_status in _ACCEPTED_STATUSES and "allocation" in m.match_rule
+    )
     # Critical safety check: a strong match must never rest on a missing
     # reference on either side. Nonzero is a hard FAIL.
     strong_missing_ref = sum(
@@ -157,6 +188,13 @@ def build_validation_items(
                 "Strong matches must never rely on a missing reference (must be 0).",
             ),
             ValidationItem("fuzzy_matches", pair_id, "INFO", fuzzy, ""),
+            ValidationItem(
+                "deterministic_allocation_matches",
+                pair_id,
+                "INFO",
+                allocation_matches,
+                "Accepted bounded deterministic allocation groups.",
+            ),
             ValidationItem("review_candidates", pair_id, "INFO", review_candidates, ""),
             ValidationItem("unmatched_org_rows", pair_id, "INFO", unmatched_org, ""),
             ValidationItem("unmatched_party_rows", pair_id, "INFO", unmatched_party, ""),
@@ -195,9 +233,7 @@ def build_validation_items(
 
     # --- Formula integrity (derived from the produced workbook's audit) ---
     audit = formula_audit or []
-    expected_diff = sum(
-        1 for m in matches if m.org_amount is not None and m.party_amount is not None
-    )
+    expected_diff = len(matches)
     diff_audit = [a for a in audit if a.expected_formula_category == "match_amount_difference"]
     diff_present = sum(1 for a in diff_audit if a.status == "PASS")
     diff_fail = sum(1 for a in diff_audit if a.status != "PASS")
@@ -214,7 +250,7 @@ def build_validation_items(
                 pair_id,
                 _status(diff_present == expected_diff if audit else True),
                 diff_present,
-                f"Expected {expected_diff} amount_difference formulas (both amounts present).",
+                f"Expected {expected_diff} guarded amount_difference formulas (one per evidence row).",
             ),
             ValidationItem(
                 "amount_difference_formula_violations",
@@ -269,6 +305,78 @@ def build_validation_items(
             )
         )
 
+    # --- Row coverage, ownership, and accepted-placement integrity ---
+    accepted = [
+        m for m in matches if m.match_status in _ACCEPTED_STATUSES and not m.review_required
+    ]
+    org_ownership = Counter(row_id for m in accepted for row_id in _record_ids(m, "org"))
+    party_ownership = Counter(row_id for m in accepted for row_id in _record_ids(m, "party"))
+    ownership_violations = sum(1 for count in org_ownership.values() if count > 1) + sum(
+        1 for count in party_ownership.values() if count > 1
+    )
+    represented_org = {row_id for m in matches for row_id in _record_ids(m, "org")}
+    represented_party = {row_id for m in matches for row_id in _record_ids(m, "party")}
+    uncovered_transactions = sum(1 for row in tx_org if row.row_id not in represented_org) + sum(
+        1 for row in tx_party if row.row_id not in represented_party
+    )
+    amount_delta_violations = 0
+    polarity_violations = 0
+    rows_by_id = {row.row_id: row for row in tx_org + tx_party if row.row_id}
+    for match in accepted:
+        if match.org_amount is None or match.party_amount is None:
+            continue
+        delta = abs(abs(match.org_amount) - abs(match.party_amount))
+        tolerance = (
+            match.amount_tolerance_used
+            if match.amount_tolerance_used is not None
+            else _AMOUNT_TOLERANCE
+        )
+        if delta > tolerance:
+            amount_delta_violations += 1
+        if _sign(match.org_amount) != _sign(match.party_amount):
+            polarity_violations += 1
+            continue
+        org_ids = _record_ids(match, "org")
+        party_ids = _record_ids(match, "party")
+        if all(row_id in rows_by_id for row_id in org_ids + party_ids):
+            org_source = sum(rows_by_id[row_id].net_source for row_id in org_ids)
+            party_source = sum(rows_by_id[row_id].net_source for row_id in party_ids)
+            if _sign(org_source) == _sign(party_source):
+                polarity_violations += 1
+
+    items.extend(
+        [
+            ValidationItem(
+                "transaction_rows_without_match_record",
+                pair_id,
+                _status(uncovered_transactions == 0, fail=True),
+                uncovered_transactions,
+                "Every transaction row must be represented by an accepted, review, or unmatched record.",
+            ),
+            ValidationItem(
+                "accepted_row_ownership_violations",
+                pair_id,
+                _status(ownership_violations == 0, fail=True),
+                ownership_violations,
+                "A source row may belong to at most one accepted match.",
+            ),
+            ValidationItem(
+                "accepted_match_amount_delta_violations",
+                pair_id,
+                _status(amount_delta_violations == 0, fail=True),
+                amount_delta_violations,
+                "Accepted matches must remain inside their recorded amount tolerance.",
+            ),
+            ValidationItem(
+                "accepted_match_polarity_violations",
+                pair_id,
+                _status(polarity_violations == 0, fail=True),
+                polarity_violations,
+                "Accepted matches must preserve org-perspective agreement and source-side mirror polarity.",
+            ),
+        ]
+    )
+
     missing_issue = sum(
         1
         for m in matches
@@ -282,6 +390,44 @@ def build_validation_items(
             missing_issue,
             "Every review/unmatched row must carry a valid primary issue code.",
         )
+    )
+
+    queue_rows = review_queue_rows or []
+    queue_missing_issue = sum(
+        1
+        for row in queue_rows
+        if not is_valid_primary_code(str(row.get("primary_issue_code") or ""))
+    )
+    queue_missing_action = sum(
+        1 for row in queue_rows if not str(row.get("suggested_action") or "").strip()
+    )
+    queue_missing_reason = sum(
+        1 for row in queue_rows if not str(row.get("reason") or "").strip()
+    )
+    items.extend(
+        [
+            ValidationItem(
+                "review_queue_rows_without_primary_issue_code",
+                pair_id,
+                _status(queue_missing_issue == 0, fail=True),
+                queue_missing_issue,
+                "Every surfaced review row must carry one stable primary issue code.",
+            ),
+            ValidationItem(
+                "manual_review_rows_without_suggested_action",
+                pair_id,
+                _status(queue_missing_action == 0, fail=True),
+                queue_missing_action,
+                "Every surfaced review row must tell the accountant what to do next.",
+            ),
+            ValidationItem(
+                "manual_review_rows_without_reason",
+                pair_id,
+                _status(queue_missing_reason == 0, fail=True),
+                queue_missing_reason,
+                "Every surfaced review row must explain why human judgment is required.",
+            ),
+        ]
     )
 
     return items

@@ -100,16 +100,16 @@ def _block_candidates(
     return blocked
 
 
-def _subset_sum_match(
+def _subset_sum_solutions(
     target: float,
     candidates: list[ReconRow],
     *,
     tolerance: float,
     max_size: int,
-) -> list[ReconRow] | None:
-    """Find a unique subset whose |sum(net_org)| matches target within tolerance."""
+) -> list[list[ReconRow]]:
+    """Return bounded subsets whose |sum(net_org)| matches target within tolerance."""
     if max_size <= 0 or not candidates:
-        return None
+        return []
     n = min(len(candidates), max_size + 4)
     limited = candidates[:n]
     solutions: list[list[ReconRow]] = []
@@ -118,9 +118,12 @@ def _subset_sum_match(
             total = sum(r.net_org for r in combo)
             if _amount_close(target, total, tolerance):
                 solutions.append(list(combo))
-    if len(solutions) == 1:
-        return solutions[0]
-    return None
+    return solutions
+
+
+def _unique_rows(groups: list[list[ReconRow]]) -> list[ReconRow]:
+    by_id = {row.row_id: row for group in groups for row in group}
+    return [by_id[row_id] for row_id in sorted(by_id)]
 
 
 def _unique_one_to_one_by_amount_date(
@@ -188,9 +191,49 @@ def find_one_to_many_allocations(
         if len(blocked) < 2:
             continue
         cap = min(tol.max_combination_search_size, policy.max_combination_search_size)
-        subset = _subset_sum_match(org.net_org, blocked, tolerance=tol.amount_tolerance, max_size=cap)
-        if subset is None:
+        solutions = _subset_sum_solutions(
+            org.net_org, blocked, tolerance=tol.amount_tolerance, max_size=cap
+        )
+        if len(solutions) > 1:
+            ambiguous = _unique_rows(solutions)
+            used_party.update(row.row_id for row in ambiguous)
+            groups.append(
+                AllocationGroup(
+                    org_row_ids=[org.row_id],
+                    party_row_ids=[row.row_id for row in ambiguous],
+                    rule="stage14_ambiguous_one_to_many_allocation",
+                    confidence=0.40,
+                    amount_delta=abs(
+                        abs(org.net_org) - abs(sum(row.net_org for row in ambiguous))
+                    ),
+                    review_required=True,
+                    review_reason="Multiple bounded one-to-many allocations have equal evidence.",
+                    amount_tolerance_used=tol.amount_tolerance,
+                    date_tolerance_days_used=tol.date_tolerance_days,
+                )
+            )
             continue
+        if not solutions:
+            if len(blocked) > cap + 4:
+                limited = blocked[: cap + 4]
+                used_party.update(row.row_id for row in limited)
+                groups.append(
+                    AllocationGroup(
+                        org_row_ids=[org.row_id],
+                        party_row_ids=[row.row_id for row in limited],
+                        rule="stage14_one_to_many_search_limit_review",
+                        confidence=0.0,
+                        amount_delta=abs(
+                            abs(org.net_org) - abs(sum(row.net_org for row in limited))
+                        ),
+                        review_required=True,
+                        review_reason="One-to-many allocation exceeded the bounded search candidate limit.",
+                        amount_tolerance_used=tol.amount_tolerance,
+                        date_tolerance_days_used=tol.date_tolerance_days,
+                    )
+                )
+            continue
+        subset = solutions[0]
         for p in subset:
             used_party.add(p.row_id)
         total_party = sum(p.net_org for p in subset)
@@ -225,11 +268,49 @@ def find_many_to_one_allocations(
         if len(blocked) < 2:
             continue
         cap = min(tol.max_combination_search_size, policy.max_combination_search_size)
-        subset = _subset_sum_match(
+        solutions = _subset_sum_solutions(
             party.net_org, blocked, tolerance=tol.amount_tolerance, max_size=cap
         )
-        if subset is None:
+        if len(solutions) > 1:
+            ambiguous = _unique_rows(solutions)
+            used_org.update(row.row_id for row in ambiguous)
+            groups.append(
+                AllocationGroup(
+                    org_row_ids=[row.row_id for row in ambiguous],
+                    party_row_ids=[party.row_id],
+                    rule="stage15_ambiguous_many_to_one_allocation",
+                    confidence=0.40,
+                    amount_delta=abs(
+                        abs(sum(row.net_org for row in ambiguous)) - abs(party.net_org)
+                    ),
+                    review_required=True,
+                    review_reason="Multiple bounded many-to-one allocations have equal evidence.",
+                    amount_tolerance_used=tol.amount_tolerance,
+                    date_tolerance_days_used=tol.date_tolerance_days,
+                )
+            )
             continue
+        if not solutions:
+            if len(blocked) > cap + 4:
+                limited = blocked[: cap + 4]
+                used_org.update(row.row_id for row in limited)
+                groups.append(
+                    AllocationGroup(
+                        org_row_ids=[row.row_id for row in limited],
+                        party_row_ids=[party.row_id],
+                        rule="stage15_many_to_one_search_limit_review",
+                        confidence=0.0,
+                        amount_delta=abs(
+                            abs(sum(row.net_org for row in limited)) - abs(party.net_org)
+                        ),
+                        review_required=True,
+                        review_reason="Many-to-one allocation exceeded the bounded search candidate limit.",
+                        amount_tolerance_used=tol.amount_tolerance,
+                        date_tolerance_days_used=tol.date_tolerance_days,
+                    )
+                )
+            continue
+        subset = solutions[0]
         for o in subset:
             used_org.add(o.row_id)
         total_org = sum(o.net_org for o in subset)
@@ -276,11 +357,35 @@ def find_many_to_many_allocations(
                     if not _amount_close(org_total, party_total, tol.amount_tolerance):
                         continue
                     if not all(
-                        is_mirror_polarity_plausible(org_combo[0], p) for p in party_combo
+                        is_type_compatible(o.type_label, p.type_label)
+                        and is_mirror_polarity_plausible(o, p)
+                        and _within_date_window(o, p, tol.date_tolerance_days)
+                        for o in org_combo
+                        for p in party_combo
                     ):
                         continue
                     solutions.append((list(org_combo), list(party_combo)))
-    if len(solutions) != 1:
+    if len(solutions) > 1:
+        org_rows = _unique_rows([org_combo for org_combo, _ in solutions])
+        party_rows = _unique_rows([party_combo for _, party_combo in solutions])
+        groups.append(
+            AllocationGroup(
+                org_row_ids=[row.row_id for row in org_rows],
+                party_row_ids=[row.row_id for row in party_rows],
+                rule="stage16_ambiguous_many_to_many_allocation",
+                confidence=0.25,
+                amount_delta=abs(
+                    abs(sum(row.net_org for row in org_rows))
+                    - abs(sum(row.net_org for row in party_rows))
+                ),
+                review_required=True,
+                review_reason="Multiple bounded many-to-many allocations have equal evidence.",
+                amount_tolerance_used=tol.amount_tolerance,
+                date_tolerance_days_used=tol.date_tolerance_days,
+            )
+        )
+        return groups
+    if not solutions:
         return groups
     org_combo, party_combo = solutions[0]
     org_total = sum(o.net_org for o in org_combo)

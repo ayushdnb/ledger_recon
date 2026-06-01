@@ -196,6 +196,10 @@ def test_review_queue_columns_priority_and_blank_manuals(tmp_path: Path) -> None
     headers = [str(c.value) for c in ws[1]]
     assert headers == REVIEW_QUEUE_COLUMNS
     assert "priority" in headers
+    assert "primary_issue_code" in headers
+    assert "source_file" in headers
+    assert "page_number" in headers
+    assert "source_row_number" in headers
     # Manual columns must be blank in every data row.
     for name in MANUAL_COLUMNS:
         idx = headers.index(name)
@@ -205,6 +209,8 @@ def test_review_queue_columns_priority_and_blank_manuals(tmp_path: Path) -> None
     p_idx = headers.index("priority")
     priorities = {str(row[p_idx].value) for row in ws.iter_rows(min_row=2)}
     assert "HIGH" in priorities
+    code_idx = headers.index("primary_issue_code")
+    assert all(str(row[code_idx].value or "").strip() for row in ws.iter_rows(min_row=2))
     wb.close()
 
 
@@ -274,6 +280,7 @@ def test_team_workbook_is_clean_and_uses_excel_tables(tmp_path: Path) -> None:
         assert wb[name].sheet_state == "hidden"
     for name in ("Summary", "Annex_Invoice", "Rows_Needing_Improvement", "Working ORG"):
         assert wb[name].sheet_state == "visible"
+    assert wb["Annex_Payment"].sheet_state == "hidden"
     working = wb["Working ORG"]
     assert working.tables
     headers = [str(cell.value) for cell in working[1]]
@@ -287,6 +294,9 @@ def test_team_workbook_is_clean_and_uses_excel_tables(tmp_path: Path) -> None:
     }
     assert "matched_ai" not in annex_text
     assert "AI" not in annex_text
+    improvement_headers = [str(cell.value) for cell in wb["Rows_Needing_Improvement"][1]]
+    assert "primary_issue_code" in improvement_headers
+    assert "source_file" in improvement_headers
     wb.close()
 
 

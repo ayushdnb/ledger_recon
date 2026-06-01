@@ -19,6 +19,8 @@ from src.formalization.reference_normalization import normalize_reference
         ("cn/dl/25-26/063", "CNDL2526063"),
         ("  DL / 25-26 / 191  ", "DL2526191"),
         ("DL.25.26.191", "DL2526191"),
+        ("GST 18% DL/25-26/191", "DL2526191"),
+        ("CGST 9% SGST 9% SA/PB/25-26/001", "SAPB2526001"),
     ],
 )
 def test_normalize_reference(raw: str, expected: str) -> None:

@@ -49,8 +49,10 @@ def _row(
             "credit_org_perspective": abs(amount) if amount < 0 else 0.0,
             "raw_type": type_label,
             "particulars": f"{type_label} {row_id}",
+            "source_file": f"{role}.pdf",
             "page_number": page,
             "source_row_number": source_row,
+            "raw_text": f"{type_label} {row_id}",
         },
         sheet_name=role,
     )
@@ -118,6 +120,21 @@ def test_many_to_one_allocation() -> None:
     assert groups[0].party_row_ids == ["p1"]
 
 
+def test_ambiguous_one_to_many_allocation_routes_to_review() -> None:
+    policy = settings.reconciliation_tolerance_policy()
+    org = [_row("o1", role="org_ledger", amount=100.0, type_label="Payment")]
+    party = [
+        _row("p1", role="party_ledger", amount=25.0, type_label="Receipt"),
+        _row("p2", role="party_ledger", amount=25.0, type_label="Receipt"),
+        _row("p3", role="party_ledger", amount=50.0, type_label="Receipt"),
+        _row("p4", role="party_ledger", amount=50.0, type_label="Receipt"),
+    ]
+    groups = find_one_to_many_allocations(org, party, policy)
+    assert len(groups) == 1
+    assert groups[0].review_required is True
+    assert "ambiguous" in groups[0].rule
+
+
 def test_credit_note_netting() -> None:
     org = [_row("o1", role="org_ledger", nref="CN1", amount=50.0, type_label="CreditNote")]
     party = [_row("p1", role="party_ledger", nref="CN1", amount=50.0, type_label="DebitNote")]
@@ -149,9 +166,19 @@ def test_per_label_tolerance_stricter_for_opening_balance() -> None:
     assert opening.amount_tolerance <= invoice.amount_tolerance
 
 
-def test_overpayment_underpayment_classification_on_unmatched() -> None:
+def test_overpayment_classification_on_exact_reference_residual() -> None:
     org = [_row("o1", role="org_ledger", nref="A", amount=100.0)]
-    party = [_row("p1", role="party_ledger", nref="B", amount=90.0)]
+    party = [_row("p1", role="party_ledger", nref="A", amount=90.0)]
     result = reconcile_rows(org, party)
-    assert any(r.match_status == "unmatched_org" for r in result.records)
-    assert any(r.match_status == "unmatched_party" for r in result.records)
+    assert any(
+        r.match_status == "candidate_review"
+        and r.primary_issue_code == PrimaryIssueCode.OVERPAYMENT.value
+        for r in result.records
+    )
+
+
+def test_operator_label_tolerance_override() -> None:
+    policy = build_tolerance_policy(
+        label_overrides={"Payment": {"date_tolerance_days": 28}}
+    )
+    assert policy.for_label("Payment").date_tolerance_days == 28

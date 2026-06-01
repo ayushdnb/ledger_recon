@@ -36,6 +36,7 @@ from src.reconciliation.allocation_engine import (
 )
 from src.reconciliation.issue_taxonomy import (
     PrimaryIssueCode,
+    classify_amount_residual,
     classify_match_record,
     classify_unmatched_row,
     ensure_codes_on_records,
@@ -547,7 +548,59 @@ def reconcile_rows(
         )
     )
 
-    # Stage 13: duplicate reference detection -> review (do not auto-match).
+    # Stage 13: exact-reference residuals -> classified review (never auto-match).
+    for org in list(unmatched_org.values()):
+        if is_missing_reference(org.normalized_reference):
+            continue
+        ptol = policy.pair_tolerance(org.type_label, org.type_label)
+        candidates = [
+            party
+            for party in unmatched_party.values()
+            if party.normalized_reference == org.normalized_reference
+            and is_type_compatible(org.type_label, party.type_label)
+            and is_mirror_polarity_plausible(org, party)
+            and (
+                _date_delta_days(org.date, party.date) is None
+                or _date_delta_days(org.date, party.date) <= ptol.date_tolerance_days
+            )
+            and not _amount_close(org.net_org, party.net_org, ptol.rounding_tolerance)
+        ]
+        if len(candidates) != 1:
+            continue
+        party = candidates[0]
+        reverse = [
+            other
+            for other in unmatched_org.values()
+            if other.normalized_reference == party.normalized_reference
+            and is_type_compatible(other.type_label, party.type_label)
+            and is_mirror_polarity_plausible(other, party)
+        ]
+        if len(reverse) != 1:
+            continue
+        residual = abs(abs(org.net_org) - abs(party.net_org))
+        issue = classify_amount_residual(
+            org.net_org,
+            party.net_org,
+            residual=residual,
+            org_label=org.type_label,
+            party_label=party.type_label,
+            write_off_threshold=ptol.small_write_off_threshold,
+            bank_charge_threshold=ptol.bank_charge_threshold,
+            discount_threshold=ptol.discount_threshold,
+        )
+        add_review_candidate(
+            org,
+            party,
+            "stage13_exact_reference_amount_residual_review",
+            0.55,
+            (
+                f"Exact-reference amount residual {residual:.2f} classified as "
+                f"{issue}; accountant review required."
+            ),
+            issue_code=issue,
+        )
+
+    # Stage 14: duplicate reference detection -> review (do not auto-match).
     org_dupes = detect_duplicate_references(list(unmatched_org.values()), side="org")
     party_dupes = detect_duplicate_references(list(unmatched_party.values()), side="party")
     for ref, ids in org_dupes.items():
@@ -591,7 +644,7 @@ def reconcile_rows(
             )
             group_id += 1
 
-    # Stages 14-15: weak candidates on still unmatched org rows.
+    # Stages 15-16: weak candidates on still unmatched org rows.
     for org in list(unmatched_org.values()):
         if org.row_id in represented_org_ids:
             continue
@@ -658,7 +711,7 @@ def reconcile_rows(
             issue = PrimaryIssueCode.DATA_QUALITY_ISSUE.value
         add_review_candidate(org, top_party, rule, confidence, reason, issue_code=issue)
 
-    # Stage 16-17: unmatched rows.
+    # Stage 17-18: unmatched rows.
     for org in sorted(unmatched_org.values(), key=lambda r: r.row_id):
         if org.row_id in represented_org_ids:
             continue

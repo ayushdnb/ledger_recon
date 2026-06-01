@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import math
 import os
+import json
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 # Conservative characters-per-token ratio used to estimate token budgets without
 # adding a tokenizer dependency. English/JSON payloads average ~4 chars/token;
@@ -114,6 +116,23 @@ def _env_choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
     return value if value in allowed else default
 
 
+def _env_json_mapping(name: str) -> dict[str, dict[str, Any]]:
+    """Load a nested JSON object or fail visibly on unsafe operator config."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must be valid JSON.") from exc
+    if not isinstance(payload, dict) or not all(
+        isinstance(label, str) and isinstance(values, dict)
+        for label, values in payload.items()
+    ):
+        raise ValueError(f"{name} must be a JSON object mapping labels to override objects.")
+    return payload
+
+
 class Settings(BaseModel):
     """Runtime settings for extraction and AI-assisted standardization."""
 
@@ -185,6 +204,7 @@ class Settings(BaseModel):
     recon_small_write_off_threshold: float = 1.0
     recon_bank_charge_threshold: float = 50.0
     recon_discount_threshold: float = 100.0
+    recon_label_tolerance_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
     def reconciliation_tolerance_policy(self) -> "ReconTolerancePolicy":
         """Build the resolved tolerance policy for deterministic reconciliation."""
@@ -201,6 +221,7 @@ class Settings(BaseModel):
             small_write_off_threshold=self.recon_small_write_off_threshold,
             bank_charge_threshold=self.recon_bank_charge_threshold,
             discount_threshold=self.recon_discount_threshold,
+            label_overrides=self.recon_label_tolerance_overrides,
         )
 
     def resolved(self, path: Path) -> Path:
@@ -386,6 +407,9 @@ def _build_settings() -> Settings:
         recon_small_write_off_threshold=_env_float("RECON_SMALL_WRITE_OFF_THRESHOLD", 1.0),
         recon_bank_charge_threshold=_env_float("RECON_BANK_CHARGE_THRESHOLD", 50.0),
         recon_discount_threshold=_env_float("RECON_DISCOUNT_THRESHOLD", 100.0),
+        recon_label_tolerance_overrides=_env_json_mapping(
+            "RECON_LABEL_TOLERANCE_OVERRIDES_JSON"
+        ),
     )
 
 

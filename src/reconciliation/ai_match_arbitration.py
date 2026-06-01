@@ -575,18 +575,39 @@ def validate_ai_decision(
     if decision.decision_type == "ledger_only":
         if decision.match_type != "unmatched":
             return reject("ledger_only_requires_unmatched_match_type")
+        if not normalize_ai_reason_code(decision.reason_code):
+            return reject("issue_code_not_allowed")
         return AIValidationResult(decision.decision_id, True, "ACCEPTED", actual_amount_delta=0.0)
 
     org_rows = [org_rows_by_id[row_id] for row_id in decision.org_row_ids]
     party_rows = [party_rows_by_id[row_id] for row_id in decision.party_row_ids]
+    if not all(
+        is_type_compatible(org.type_label, party.type_label)
+        for org in org_rows
+        for party in party_rows
+    ):
+        return reject("type_compatibility_not_supported")
     org_amount = sum(row.net_org for row in org_rows)
     party_amount = sum(row.net_org for row in party_rows)
     amount_delta = abs(abs(org_amount) - abs(party_amount))
     date_delta = _max_date_delta(org_rows, party_rows)
     if abs(decision.amount_delta - amount_delta) > config.ai_recon_amount_tolerance:
         return reject("invented_or_incorrect_amount_delta", amount=amount_delta, date=date_delta)
-    if amount_delta > config.ai_recon_amount_tolerance:
-        return reject("amount_mismatch", amount=amount_delta, date=date_delta)
+    tolerance = config.reconciliation_tolerance_policy().pair_tolerance(
+        org_rows[0].type_label, party_rows[0].type_label
+    )
+    amount_limit = (
+        tolerance.rounding_tolerance
+        if decision.match_type == "rounding"
+        else config.ai_recon_amount_tolerance
+    )
+    if amount_delta > amount_limit:
+        reason = (
+            "rounding_tolerance_exceeded"
+            if decision.match_type == "rounding"
+            else "amount_mismatch"
+        )
+        return reject(reason, amount=amount_delta, date=date_delta)
     if date_delta is not None and date_delta > config.ai_recon_date_tolerance_days:
         return reject("date_tolerance_exceeded", amount=amount_delta, date=date_delta)
     if date_delta is not None and decision.date_delta_days != date_delta:
@@ -600,9 +621,15 @@ def validate_ai_decision(
     ref_similarity = _best_reference_similarity(org_rows, party_rows)
     if decision.match_type == "exact_reference" and ref_similarity < 1.0:
         return reject("exact_reference_not_supported", amount=amount_delta, date=date_delta)
-    if decision.match_type == "voucher_typo" and ref_similarity < 0.65:
+    if decision.match_type == "voucher_typo" and ref_similarity < tolerance.fuzzy_reference_threshold:
         return reject("voucher_typo_similarity_too_low", amount=amount_delta, date=date_delta)
-    if decision.reason_code and not normalize_ai_reason_code(decision.reason_code):
+    if decision.match_type == "grouped_amount" and decision.decision_type == "one_to_one":
+        return reject("grouped_amount_requires_group_cardinality", amount=amount_delta, date=date_delta)
+    if decision.match_type == "date_shift" and not date_delta:
+        return reject("date_shift_requires_nonzero_date_delta", amount=amount_delta, date=date_delta)
+    if decision.match_type == "rounding" and amount_delta <= config.ai_recon_amount_tolerance:
+        return reject("rounding_requires_residual", amount=amount_delta, date=date_delta)
+    if not normalize_ai_reason_code(decision.reason_code):
         return reject("issue_code_not_allowed", amount=amount_delta, date=date_delta)
     return AIValidationResult(
         decision.decision_id,
@@ -628,6 +655,8 @@ def _record_from_ai_decision(
     response: AIReconciliationResponse,
     org_rows_by_id: dict[str, ReconRow],
     party_rows_by_id: dict[str, ReconRow],
+    *,
+    config: Settings,
 ) -> MatchRecord:
     org_rows = [org_rows_by_id[row_id] for row_id in decision.org_row_ids]
     party_rows = [party_rows_by_id[row_id] for row_id in decision.party_row_ids]
@@ -635,6 +664,11 @@ def _record_from_ai_decision(
     party_amount = sum(row.net_org for row in party_rows) if party_rows else None
     status = "ledger_only_ai" if decision.decision_type == "ledger_only" else "matched_ai"
     first = (org_rows or party_rows)[0]
+    amount_tolerance_used = config.ai_recon_amount_tolerance
+    if org_rows and party_rows and decision.match_type == "rounding":
+        amount_tolerance_used = config.reconciliation_tolerance_policy().pair_tolerance(
+            org_rows[0].type_label, party_rows[0].type_label
+        ).rounding_tolerance
     return MatchRecord(
         match_group_id=decision.decision_id,
         match_status=status,
@@ -671,6 +705,8 @@ def _record_from_ai_decision(
         cache_key=response.cache_key,
         primary_issue_code=normalize_ai_reason_code(decision.reason_code)
         or PrimaryIssueCode.EXACT_MATCH.value,
+        amount_tolerance_used=amount_tolerance_used,
+        date_tolerance_days_used=config.ai_recon_date_tolerance_days,
     )
 
 
@@ -739,6 +775,7 @@ def _review_record(
         prompt_fingerprint=(response.prompt_fingerprint if response else ""),
         response_fingerprint=(response.response_fingerprint if response else ""),
         cache_key=(response.cache_key if response else packet.fingerprint),
+        primary_issue_code=PrimaryIssueCode.MANUAL_REVIEW_REQUIRED.value,
     )
 
 
@@ -919,7 +956,14 @@ def arbitrate_unresolved_matches(
             continue
         for decision, validation in accepted_in_packet:
             result.records.append(
-                _record_from_ai_decision(decision, validation, response, org_rows_by_id, party_rows_by_id)
+                _record_from_ai_decision(
+                    decision,
+                    validation,
+                    response,
+                    org_rows_by_id,
+                    party_rows_by_id,
+                    config=config,
+                )
             )
             used_org.update(decision.org_row_ids)
             used_party.update(decision.party_row_ids)

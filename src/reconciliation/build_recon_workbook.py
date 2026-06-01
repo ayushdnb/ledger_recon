@@ -19,7 +19,7 @@ from src.reconciliation.ai_match_arbitration import arbitrate_unresolved_matches
 from src.reconciliation.annexure_builder import build_annexure_plans
 from src.reconciliation.ledger_loader import load_formalized_ledgers
 from src.reconciliation.matching_engine import reconcile_rows
-from src.reconciliation.recon_models import ReconRow
+from src.reconciliation.recon_models import ReconRow, ValidationItem
 from src.reconciliation import workbook_style as st
 from src.reconciliation.reference_profile import (
     discover_reference_workbook,
@@ -33,6 +33,7 @@ from src.reconciliation.team_workbook_builder import build_team_workbook
 from src.reconciliation.validation import build_validation_items
 from src.reconciliation.workbook_writer import write_reconciliation_workbook
 from src.reconciliation.working_ledger_builder import apply_match_records, build_working_rows
+from src.tools.inspect_recon_workbook import inspect as inspect_recon_workbook
 
 logger = logging.getLogger("reconciliation.build_recon_workbook")
 
@@ -69,13 +70,11 @@ def _run_formalization(pair_id: str, *, repair_mode: bool = False) -> None:
     if repair_mode:
         env.update(
             {
-                "AI_ENABLED": "true",
                 "AI_FORMALIZATION_MODE": "repair_failed_rows",
                 "AI_MAX_FAILED_ROWS_PER_REQUEST": "10",
                 "AI_MAX_AI_PAGES_PER_LEDGER": "1",
                 "AI_MAX_LAYOUT_SAMPLE_LINES": "12",
                 "AI_FORMALIZATION_CACHE_ENABLED": "true",
-                "AI_DATA_APPROVAL": "hosted_approved",
             }
         )
     # Non-repair passes inherit AI_ENABLED / AI_FORMALIZATION_MODE from the
@@ -300,6 +299,54 @@ def build_reconciliation_workbook(
         formula_audit_failures=formula_fails,
         formula_audit=formula_audit,
         review_queue_count=len(review_queue_rows),
+        review_queue_rows=review_queue_rows,
+    )
+    formula_audit = write_reconciliation_workbook(
+        validation_items=validation_items, **writer_kwargs
+    )
+    inspection = inspect_recon_workbook(output_path)
+    inspection_failures: list[str] = []
+    if not inspection.get("required_sheets_present"):
+        inspection_failures.append("required_sheets")
+    if inspection.get("formula_audit_fail_count") != 0:
+        inspection_failures.append("formula_audit")
+    if inspection.get("validation_fail_count") != 0:
+        inspection_failures.append("validation_report")
+    if inspection.get("amount_difference_formula_missing") != 0:
+        inspection_failures.append("amount_difference_formulas")
+    if inspection.get("evidence_formula_violations"):
+        inspection_failures.append("evidence_formulas")
+    if inspection.get("strong_matches_missing_reference") != 0:
+        inspection_failures.append("strong_match_references")
+    if not inspection.get("review_queue_columns_ok"):
+        inspection_failures.append("review_queue_columns")
+    if inspection.get("review_queue_manual_fields_nonblank") != 0:
+        inspection_failures.append("review_queue_manual_fields")
+    validation_items.extend(
+        [
+            ValidationItem(
+                "required_sheets_present",
+                pair_id,
+                "PASS" if inspection.get("required_sheets_present") else "FAIL",
+                len(inspection.get("missing_required_sheets", [])),
+                (
+                    "All required internal workbook sheets are present."
+                    if inspection.get("required_sheets_present")
+                    else f"Missing: {inspection.get('missing_required_sheets', [])}"
+                ),
+            ),
+            ValidationItem(
+                "generated_workbook_inspection_status",
+                pair_id,
+                "PASS" if not inspection_failures else "FAIL",
+                len(inspection_failures),
+                (
+                    "Read-only generated-workbook inspection passed."
+                    if not inspection_failures
+                    else f"Inspection failures: {', '.join(inspection_failures)}."
+                ),
+            ),
+        ]
     )
     formula_audit = write_reconciliation_workbook(
         validation_items=validation_items, **writer_kwargs

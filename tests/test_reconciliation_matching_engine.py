@@ -7,6 +7,7 @@ from src.reconciliation.matching_engine import (
     is_type_compatible,
     reconcile_rows,
 )
+from src.reconciliation.issue_taxonomy import PrimaryIssueCode
 from src.reconciliation.recon_models import ReconRow
 
 
@@ -88,11 +89,15 @@ def test_duplicate_candidates_go_review() -> None:
     assert any("multiple exact-reference" in r.review_reason.lower() for r in result.records)
 
 
-def test_amount_mismatch_unmatched() -> None:
+def test_exact_reference_amount_mismatch_routes_to_classified_review() -> None:
     org = [_row("o1", role="org_ledger", nref="ABC", amount=100.0)]
     party = [_row("p1", role="party_ledger", nref="ABC", amount=125.0)]
     result = reconcile_rows(org, party)
-    assert any(r.match_status == "unmatched_org" for r in result.records)
+    assert any(
+        r.match_status == "candidate_review"
+        and r.primary_issue_code == PrimaryIssueCode.UNDERPAYMENT.value
+        for r in result.records
+    )
 
 
 def test_type_compatibility() -> None:

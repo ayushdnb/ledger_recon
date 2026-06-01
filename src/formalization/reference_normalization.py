@@ -28,6 +28,8 @@ from typing import Optional
 # Anything that is not a letter or digit is treated as a separator/noise and
 # removed. This deliberately keeps the alphanumeric body intact and ordered.
 _NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]+")
+_PERCENT_RATE_RE = re.compile(r"(?i)\b\d+(?:\.\d+)?\s*%")
+_GST_TOKEN_RE = re.compile(r"(?i)\b(?:GST|CGST|SGST|IGST)\b")
 
 
 def normalize_reference(value: Optional[str]) -> str:
@@ -37,5 +39,8 @@ def normalize_reference(value: Optional[str]) -> str:
     text = str(value).strip()
     if not text:
         return ""
+    # PDF layout extraction can occasionally carry a nearby GST-rate token into
+    # the bill/reference cell. Rates and tax labels are not invoice evidence.
+    text = _GST_TOKEN_RE.sub("", _PERCENT_RATE_RE.sub("", text))
     stripped = _NON_ALNUM_RE.sub("", text)
     return stripped.upper()

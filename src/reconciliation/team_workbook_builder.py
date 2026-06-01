@@ -16,11 +16,15 @@ TEAM_REVIEW_COLUMNS = [
     "priority",
     "source_sheet",
     "source_row_id",
+    "source_file",
+    "page_number",
+    "source_row_number",
     "type_label",
     "date",
     "reference",
     "amount",
     "match_status",
+    "primary_issue_code",
     "reason",
     "suggested_action",
     "reviewer_comment",
@@ -182,6 +186,22 @@ def _sanitize_visible_status_values(ws) -> None:
                 cell.value = VISIBLE_STATUS[cell.value]
 
 
+def _active_working_labels(wb) -> set[str]:
+    labels: set[str] = set()
+    for ws in wb.worksheets:
+        if not ws.title.startswith("Working "):
+            continue
+        headers = _headers(ws)
+        if "type_label" not in headers:
+            continue
+        idx = headers.index("type_label") + 1
+        labels.update(
+            str(ws.cell(row=row_no, column=idx).value or "").strip()
+            for row_no in range(2, ws.max_row + 1)
+        )
+    return {label for label in labels if label}
+
+
 def _simplify_annexure_match_section(ws) -> None:
     section_row = None
     for row in ws.iter_rows():
@@ -235,6 +255,12 @@ def build_team_workbook(
     _write_team_guide(guide, pair_id=pair_id)
     _write_improvement_rows(wb)
 
+    active_labels = _active_working_labels(wb)
+    relevant_annexures = {
+        ws.title
+        for ws in wb.worksheets
+        if ws.title.startswith("Annex_") and str(ws["B4"].value or "").strip() in active_labels
+    }
     used_table_names: set[str] = set()
     for ws in wb.worksheets:
         if ws.title.startswith("Working "):
@@ -245,7 +271,15 @@ def build_team_workbook(
             _simplify_annexure_match_section(ws)
     _add_excel_table(wb["Rows_Needing_Improvement"], "Rows_Needing_Improvement", used_table_names)
 
-    hidden = INTERNAL_SHEETS | set(raw_sheet_names)
+    hidden = (
+        INTERNAL_SHEETS
+        | set(raw_sheet_names)
+        | {
+            name
+            for name in wb.sheetnames
+            if name.startswith("Annex_") and name not in relevant_annexures
+        }
+    )
     for name in hidden:
         if name in wb.sheetnames:
             wb[name].sheet_state = "hidden"
@@ -254,7 +288,7 @@ def build_team_workbook(
         ["Team_Guide"]
         + [name for name in wb.sheetnames if name.startswith("Working ")]
         + ["Summary"]
-        + [name for name in wb.sheetnames if name.startswith("Annex_")]
+        + [name for name in wb.sheetnames if name in relevant_annexures]
         + (["Unknown_Needs_Review"] if "Unknown_Needs_Review" in wb.sheetnames else [])
         + ["Rows_Needing_Improvement"]
     )

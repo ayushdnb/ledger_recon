@@ -60,6 +60,10 @@ AI_REASON_ALIASES: dict[str, str] = {
     "contextual": PrimaryIssueCode.AMBIGUOUS_MATCH.value,
     "voucher_typo": PrimaryIssueCode.REFERENCE_MISMATCH.value,
     "side_mirror": PrimaryIssueCode.EXACT_MATCH.value,
+    "tax_difference": PrimaryIssueCode.TAX_DIFFERENCE.value,
+    "tds": PrimaryIssueCode.TAX_DIFFERENCE.value,
+    "bank_charge": PrimaryIssueCode.BANK_CHARGE_DIFFERENCE.value,
+    "discount": PrimaryIssueCode.DISCOUNT_DIFFERENCE.value,
 }
 
 
@@ -150,6 +154,8 @@ def classify_amount_residual(
     discount_threshold: float,
 ) -> str:
     """Classify a signed amount residual between matched groups."""
+    if org_label == "TDS" or party_label == "TDS":
+        return PrimaryIssueCode.TAX_DIFFERENCE.value
     if residual <= write_off_threshold:
         return PrimaryIssueCode.EXACT_MATCH.value
     if org_label in {"Payment", "Receipt"} or party_label in {"Payment", "Receipt"}:

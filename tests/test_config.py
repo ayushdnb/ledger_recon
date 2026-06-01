@@ -83,6 +83,27 @@ def test_api_key_is_not_exposed_in_repr(monkeypatch) -> None:
     assert config.settings.ai_api_key.get_secret_value() == "super-secret-key-value"
 
 
+def test_reconciliation_label_tolerance_override_loads_from_env(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "RECON_LABEL_TOLERANCE_OVERRIDES_JSON",
+        '{"Payment":{"date_tolerance_days":21,"rounding_tolerance":0.03}}',
+    )
+    config = _fresh_config()
+    payment = config.settings.reconciliation_tolerance_policy().for_label("Payment")
+    assert payment.date_tolerance_days == 21
+    assert payment.rounding_tolerance == 0.03
+
+
+def test_reconciliation_label_tolerance_override_rejects_unknown_field(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "RECON_LABEL_TOLERANCE_OVERRIDES_JSON",
+        '{"Payment":{"invented_tolerance":12}}',
+    )
+    config = _fresh_config()
+    with pytest.raises(ValueError, match="Unsupported reconciliation tolerance override"):
+        config.settings.reconciliation_tolerance_policy()
+
+
 def teardown_module(module) -> None:  # noqa: ARG001 - reset shared singleton
     import src.config
 

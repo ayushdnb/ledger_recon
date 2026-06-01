@@ -51,6 +51,8 @@ ANNEX_MATCH_HEADERS = [
     "amount_difference",
     "review_required",
     "review_reason",
+    "primary_issue_code",
+    "secondary_issue_tags",
     "validation_status",
     "reviewer_comment",
     "manual_status",
